@@ -1,13 +1,13 @@
 # Tasks
 
-本轮仅修订规约，以下均为未来实现任务，全部保持未勾选。每轮只完成一条 task，实际执行 verify 后才勾选。后端预定目录 backend，前端 frontend；后端测试/构建命令在 backend 执行，前端构建在 frontend 执行。每条实现任务同时交付对应测试与必要接口说明，记录真实命令和输出。
+当前处于逐项实现阶段，未完成任务保持未勾选。每轮只完成一条 task，实际执行 verify 后才勾选。后端预定目录 backend，前端 frontend；后端测试/构建命令在 backend 执行，前端构建在 frontend 执行。每条实现任务同时交付对应测试与必要接口说明，记录真实命令和输出。
 
 顺序为配置与模型 → 登录与会话 → 种子 → 班级隔离 → 上传 → 前端 → Compose → 集成。正式种子前的认证测试使用独立测试用户与临时数据库 fixture；材料上传实现前使用测试 handler 验证授权中间件，均不依赖未来业务功能。测试 fixture 不形成额外产品功能。其余未定边界在对应 task 确需改变合同前先修订规约。
 
 ## 1. 数据模型与配置
 
-- [ ] 1.1 建立 Go module、HTTP 服务、仅进程存活的 GET /health 和环境配置入口，声明 MySQL 驱动、SESSION_SECRET 与必需数据库配置；verify：在 backend 执行 `go build ./...` 和配置测试，缺失/空密钥或数据库配置时启动失败，不输出凭据。
-- [ ] 1.2 创建 MySQL 8.0 InnoDB 的 classes/users/sessions/materials/knowledge_entries 表、外键及唯一约束，sessions 含匿名会话和 CSRF 字段，materials 含 source=seed/upload；verify：数据库集成测试验证五表、会话摘要、可空 user_id、知识库唯一关联、事务回滚及带盐 scrypt 密码哈希，记录执行命令。
+- [x] 1.1 建立 Go module、HTTP 服务、仅进程存活的 GET /health 和环境配置入口，声明 MySQL 驱动、SESSION_SECRET 与必需数据库配置；verify：在 backend 执行 `go build ./...` 和配置测试，缺失/空密钥或数据库配置时启动失败，不输出凭据。已执行测试、构建、vet 与真实进程 smoke，证据见 backend/VERIFY-T1.1.md。
+- [x] 1.2 使用版本化显式 SQL 与参数化连接建立 MySQL 8.0 的五张业务表，保留 sessions 的匿名/CSRF 字段、materials.source；materials/knowledge_entries 的 class_id 均非空并建索引，知识库 material_id 唯一且复合外键保证班级一致。当前无规约要求的其他占位表，不实现种子或业务逻辑；verify：真实 MySQL 8.0 上两次 up、SHOW TABLES、两表 SHOW CREATE TABLE、重复插入/错误外键/NULL 拒绝、事务回滚、测试 scrypt 哈希存储，确认迁移 SQL 被 git 跟踪并记录命令输出。已在 MySQL 8.0.46 完成全部本项 verify，见 backend/VERIFY-T1.2.md。
 - [ ] 1.3 编写配置示例及忽略规则说明；verify：逐项比对必需变量、两个数据卷、会话/CSRF 有效期、三个种子密码，确认示例无真实值，日志与构建上下文不包含凭据；不提前依赖前端构建产物。
 
 ## 2. 登录与会话

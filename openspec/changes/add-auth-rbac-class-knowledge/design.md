@@ -22,6 +22,8 @@ Compose 规划三个服务：Nginx、Go API、MySQL。浏览器通过 Nginx 同�
 
 MySQL 使用 InnoDB，数据目录 `/var/lib/mysql` 挂载独立命名卷 `mysql_data`；Go 的 `/data` 挂载 `material_data`，保存 `/data/uploads` 原文件与 `/data/staging` 临时文件。容器镜像和临时可写层不保存业务数据。数据库连接配置及密码从环境注入，不写入前端构建产物；Go 使用独立应用数据库账号，不使用 root 账号。
 
+T1.1 配置落点：backend 为 Go module，入口为 cmd/server。必需环境变量为 SESSION_SECRET、DB_HOST、DB_PORT、DB_NAME、DB_USER、DB_PASSWORD，缺失、空值或纯空白时启动失败，只报告变量名；DB_PORT 必须为 1–65535。HTTP_ADDR 可选，默认 127.0.0.1:8080，可显式配置内部容器监听地址；端口同样必须有效。保留密码/密钥原值，不自动裁剪。使用 go-sql-driver/mysql 构造延迟连接池，配置加载和 /health 均不执行数据库 ping；后续任务负责数据库结构与业务就绪检查。本轮不创建数据库表、认证或材料业务。
+
 ### 2. 身份、会话与密码
 
 预置账号包含唯一用户名、带随机盐的 scrypt 密码哈希、角色（teacher/student）、单一班级外键。单账号单班级是本迭代的数据模型约定。密码通过后续初始化时的环境变量提供，禁止源码默认密码及明文落库，日志不得记录密码或会话凭据。
@@ -62,7 +64,11 @@ login/logout/upload 必须携带 `X-CSRF-Token` 请求头并通过同源校验�
 
 接受扩展名大小写不敏感的 `.txt`、`.md`，严格按 UTF-8（允许 BOM）解码。Markdown 提取文本定义为解码后的源码文本，不渲染为 HTML，不调用模型。单文件最大 5 MiB（5 × 1024 × 1024 字节）；按速查表统一非法类型、缺文件/多文件/空白文本/非法编码为 400，超限为 413。认证、授权优先于这些业务校验。客户端文件名仅保留安全展示名，存储名由服务端随机生成，不能包含用户指定路径。
 
-数据表规划：classes（id、name）；users（id、username 唯一、class_id、role、password_hash）；sessions（session_id_hash 唯一、user_id 可空外键、created_at、expires_at、csrf_token_hash、csrf_expires_at）；materials（id、class_id、uploader_id、source、original_name、storage_key、size、created_at）；knowledge_entries（id、material_id 唯一外键、extracted_text）。sessions 保存会话 ID 的 HMAC 摘要，不保存原始 ID。source 枚举为 seed/upload：B 班预置材料为 seed，允许 uploader_id 为空；教师上传为 upload，uploader_id 必须关联教师。知识库班级通过材料关联确定，避免两份班级字段漂移。API 的 title 由安全展示名 original_name 派生，不另建标题输入流程。
+数据表规划：classes（id、name）；users（id、username 唯一、class_id、role、password_hash）；sessions（session_id_hash 唯一、user_id 可空外键、created_at、expires_at、csrf_token_hash、csrf_expires_at）；materials（id、class_id 非空并建索引、uploader_id、source、original_name、storage_key、size、created_at）；knowledge_entries（id、material_id 唯一外键、class_id 非空并建索引、extracted_text）。sessions 保存会话 ID 的 HMAC 摘要，不保存原始 ID。source 枚举为 seed/upload：B 班预置材料为 seed，允许 uploader_id 为空；教师上传为 upload，uploader_id 必须关联教师。按 T1.2 新要求，知识库显式保存 class_id，使用 (material_id, class_id) 到 materials(id, class_id) 的复合外键防止两份班级归属漂移，材料仍为权限来源。API 的 title 由安全展示名 original_name 派生，不另建标题输入流程。
+
+T1.2 使用 golang-migrate 的版本化显式 SQL（up/down）及 schema_migrations 元数据表，无 ORM 自动建表；连接参数来自 DB_* 环境变量，验证插入通过占位参数传值，不拼接外部输入到 SQL。独立迁移命令不需要 SESSION_SECRET，不由 health 或 HTTP 启动自动触发。MySQL 8.0.16+ 强制执行 CHECK；应用验收使用 MySQL 8.0。迁移首次 up 建表，重复 up 为无变更；DDL 失败保留 dirty 状态，禁止自动 force 或宣称 DDL 可整体回滚。down 仅供显式销毁已备份/可丢弃数据的数据库，正常运行不调用。
+
+密码仅设 password_hash 列，采用 $scrypt$ 编码格式；数据库检查格式前缀/长度，不宣称能从 SQL 证明输入经过真实密码哈希。实际哈希计算属于后续账号初始化/认证任务，T1.2 使用随机测试输入计算 scrypt 后验证存储。当前 change 与主规约中均无讲义、作业、助手、技能占位表定义，因此“仍保留的占位结构”集合为空，不新增这些业务表。本轮只建五张业务表和迁移元数据，不实现种子（当前编号已调整为 3.x）或业务接口。
 
 执行流程：授权 → 校验并写临时文件 → 解码提取 → 数据库事务内创建材料与知识库记录 → 将文件移动到持久目录 → 提交事务 → 返回 201。同步完成后列表即可读，无等待后台索引。确定失败且未提交时两种记录均不提交，不产生可见半成品；存储/提取内部异常返回通用 500，数据库不可用返回 503。一次补偿删除失败时保留待清理文件，启动时清理 staging 与无数据库引用的文件，业务就绪前完成清理；health 不等待数据库或清理。持续清理失败时保持业务未就绪（业务接口 503），记录不含凭据的错误并等待人工处理，不实现自动重试策略。事务已提交但响应中断、客户端未收到 201 时，原文件与两种记录仍有效且可查询；客户端重试视为独立上传，本迭代不提供去重或幂等键。
 

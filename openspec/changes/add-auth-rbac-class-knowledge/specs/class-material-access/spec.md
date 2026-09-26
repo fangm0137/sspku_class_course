@@ -6,6 +6,17 @@
 
 ## ADDED Requirements
 
+### Requirement: Explicit versioned database schema
+系统 SHALL 使用 MySQL 8.0 的显式版本化 SQL 迁移创建 classes/users/sessions/materials/knowledge_entries；连接和测试数据 MUST 参数化，不使用 ORM 自动建表。materials 与 knowledge_entries 的 class_id MUST 非空且具有索引。users.username、sessions.session_id_hash 和 knowledge_entries.material_id MUST 唯一；知识库的材料与班级复合外键 MUST 阻止与来源材料不一致的班级。密码仅存 password_hash，不建立明文密码字段。当前没有需保留的其他占位表，迁移不插入业务种子。
+
+#### Scenario: Repeat migration on an empty database
+- **WHEN** 对空 MySQL 8.0 数据库执行 up，再次执行同一版本 up
+- **THEN** 首次建立五张业务表和迁移元数据表，第二次无变更且成功，表中无业务数据
+
+#### Scenario: Database constraints reject invalid rows
+- **WHEN** 测试尝试重复用户名、重复会话摘要、重复 material_id，或为材料/知识库写入 NULL class_id、无效外键、与材料不同的知识库 class_id
+- **THEN** 数据库拒绝对应语句；SHOW CREATE TABLE 可查看两张表的非空列、索引和唯一/外键约束
+
 ### Requirement: Account password authentication
 系统 SHALL 允许预置教师和学生使用账号密码登录，成功返回 200 并建立有效期为 8 小时的会话；账号不存在或密码错误统一返回 401，不泄露账号存在性。所有材料列表、详情、原文件和关联知识库文本入口 MUST 验证登录身份。
 
