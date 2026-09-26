@@ -8,11 +8,11 @@
 
 - [x] 1.1 建立 Go module、HTTP 服务、仅进程存活的 GET /health 和环境配置入口，声明 MySQL 驱动、SESSION_SECRET 与必需数据库配置；verify：在 backend 执行 `go build ./...` 和配置测试，缺失/空密钥或数据库配置时启动失败，不输出凭据。已执行测试、构建、vet 与真实进程 smoke，证据见 backend/VERIFY-T1.1.md。
 - [x] 1.2 使用版本化显式 SQL 与参数化连接建立 MySQL 8.0 的五张业务表，保留 sessions 的匿名/CSRF 字段、materials.source；materials/knowledge_entries 的 class_id 均非空并建索引，知识库 material_id 唯一且复合外键保证班级一致。当前无规约要求的其他占位表，不实现种子或业务逻辑；verify：真实 MySQL 8.0 上两次 up、SHOW TABLES、两表 SHOW CREATE TABLE、重复插入/错误外键/NULL 拒绝、事务回滚、测试 scrypt 哈希存储，确认迁移 SQL 被 git 跟踪并记录命令输出。已在 MySQL 8.0.46 完成全部本项 verify，见 backend/VERIFY-T1.2.md。
-- [ ] 1.3 编写配置示例及忽略规则说明；verify：逐项比对必需变量、两个数据卷、会话/CSRF 有效期、三个种子密码，确认示例无真实值，日志与构建上下文不包含凭据；不提前依赖前端构建产物。
+- [x] 1.3 编写配置示例及忽略规则说明；verify：逐项比对必需变量、两个数据卷、会话/CSRF 有效期、三个种子密码，确认示例无真实值，日志与构建上下文不包含凭据；不提前依赖前端构建产物。
 
 ## 2. 登录与会话
 
-- [ ] 2.1 实现 GET /api/csrf 与匿名/已登录会话令牌绑定，X-CSRF-Token 和同源检查；verify：使用测试 handler 及独立用户 fixture，测试匿名获取、30 分钟/会话到期、重复获取使旧令牌失效、错误令牌 403、匿名身份访问受保护 handler 为 401、查库错误 503，并核对 no-store。
+- [x] 2.1 实现 GET /api/csrf 与匿名/已登录会话令牌绑定，X-CSRF-Token 和同源检查；verify：使用测试 handler 及独立用户 fixture，测试匿名获取、30 分钟/会话到期、重复获取使旧令牌失效、错误令牌 403、匿名身份访问受保护 handler 为 401、查库错误 503，并核对 no-store。已在真实 MySQL 8.0.46 完成验证，命令、输出及边界见 backend/VERIFY-T2.1.md。
 - [ ] 2.2 实现 POST /api/login、8 小时服务端会话和新旧会话替换；verify：独立 fixture 测试教师/学生登录、username 1–64 与 password 1–128 码点边界、缺失/null/空串/超长/类型错误/非法 JSON 为通用 400，凭据错误为同形 401；验证成功 user 对象、Cookie 不透明及原令牌失效，数据库故障为 503。
 - [ ] 2.3 实现 POST /api/logout 与 GET /api/me；verify：测试 me 返回 id/username/role/class_id，登出 200 与 ok=true、删除行并清 Cookie、旧 Cookie 重放 401，登出 CSRF 错误 403、数据库故障 503 不误报退出成功；记录三种认证接口及 CSRF 使用步骤。
 

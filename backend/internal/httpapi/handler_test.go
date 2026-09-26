@@ -8,7 +8,7 @@ import (
 
 func TestAnonymousHealthNeedsNoDependencies(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	NewHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	NewHandler(nil, "").ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if recorder.Code != http.StatusOK || recorder.Body.String() != `{"status":"ok"}` {
 		t.Fatalf("unexpected liveness response: %d %s", recorder.Code, recorder.Body.String())
 	}

@@ -1,0 +1,26 @@
+# Future builds must use the repository root as context.
+.git
+.agents
+.codex
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.key
+**/*.pem
+**/secrets
+**/data
+**/uploads
+**/staging
+**/*.log
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+project-src/week03-applied/instance
+backend/server
+backend/server.exe
+backend/migrate
+backend/migrate.exe

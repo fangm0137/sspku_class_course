@@ -3,3 +3,25 @@ __pycache__/
 .pytest_cache/
 project-src/week03-applied/instance/
 *.pyc
+
+# Local credentials at any depth; only the reviewed example is allowed.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Runtime data and logs, not source fixtures or SQL migrations.
+data/
+uploads/
+staging/
+*.log
+
+# Local build outputs.
+node_modules/
+dist/
+backend/server
+backend/server.exe
+backend/migrate
+backend/migrate.exe

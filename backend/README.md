@@ -1,6 +1,6 @@
-# Backend — T1.1 / T1.2
+# Backend — T1.1–T1.3 / T2.1
 
-当前实现 Go 服务骨架、必需配置校验、MySQL 延迟连接池、匿名 `GET /health` 和独立 SQL 迁移命令。尚未实现业务 API、会话业务或文件存储。无需运行 MySQL 即可验证进程存活；迁移必须连接真实 MySQL，这不代表业务已就绪。
+当前实现 Go 服务骨架、必需配置校验、MySQL 延迟连接池、匿名 `GET /health`、独立 SQL 迁移命令及 `GET /api/csrf`。CSRF 使用服务端会话绑定，尚未实现账号登录、材料 API 或文件存储。无需运行 MySQL 即可验证进程存活；迁移及 CSRF 必须连接真实 MySQL，这不代表完整业务已就绪。
 
 模块当前最低要求 Go 1.26.0（新增依赖要求）；本轮使用 Go 1.27.1 验证，MySQL 驱动固定为 v1.10.1，golang-migrate 为 v4.20.1。在本目录执行：
 
@@ -18,9 +18,11 @@ go build ./...
 curl.exe -i http://127.0.0.1:8080/health
 ```
 
-预期 HTTP 200、Content-Type 为 application/json、正文 `{"status":"ok"}`。该接口不访问数据库、文件或会话。按 Ctrl+C 停止前台服务。完整配置示例与忽略规则属于 T1.3，Compose 属于第 7 组任务。
+预期 HTTP 200、Content-Type 为 application/json、正文 `{"status":"ok"}`。该接口不访问数据库、文件或会话。按 Ctrl+C 停止前台服务。配置见 [根目录示例](../.env.example) 与 [CONFIGURATION.md](CONFIGURATION.md)，Compose 属于第 7 组任务。
 
 本轮实际验证记录见 [VERIFY-T1.1.md](VERIFY-T1.1.md)。本机便携 Go 位于临时目录，未修改系统 PATH；后续终端需要显式使用该路径或自行配置已安装的 Go。
+
+CSRF 的接口响应、Cookie、Origin 与使用步骤见 [CSRF.md](CSRF.md)，实际数据库验收见 [VERIFY-T2.1.md](VERIFY-T2.1.md)。
 
 ## 显式数据库迁移
 

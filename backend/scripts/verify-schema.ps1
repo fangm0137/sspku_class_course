@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$MySQLBin,
-    [string]$GoCommand = 'go'
+    [string]$GoCommand = 'go',
+    [ValidateSet('schema','csrf')][string]$Suite = 'schema'
 )
 $ErrorActionPreference = 'Stop'
 $backendDir = Split-Path $PSScriptRoot -Parent
@@ -72,10 +73,15 @@ try {
     Write-Output 'COMMAND: go run ./cmd/migrate up (second run)'
     & $GoCommand run ./cmd/migrate up
     if ($LASTEXITCODE -ne 0) { throw 'second migration failed' }
-    Write-Output 'COMMAND: go test ./internal/schema -run TestMySQL8Schema -v -count=1'
-    & $GoCommand test ./internal/schema -run TestMySQL8Schema -v -count=1
-    if ($LASTEXITCODE -ne 0) { throw 'schema integration verification failed' }
-    Write-Output 'PASS isolated MySQL 8.0 migration and constraint verification'
+    if ($Suite -eq 'csrf') {
+        Write-Output 'COMMAND: go test ./internal/httpapi -run TestMySQL8CSRF -v -count=1'
+        & $GoCommand test ./internal/httpapi -run TestMySQL8CSRF -v -count=1
+    } else {
+        Write-Output 'COMMAND: go test ./internal/schema -run TestMySQL8Schema -v -count=1'
+        & $GoCommand test ./internal/schema -run TestMySQL8Schema -v -count=1
+    }
+    if ($LASTEXITCODE -ne 0) { throw "$Suite integration verification failed" }
+    Write-Output "PASS isolated MySQL 8.0 $Suite verification"
 } finally {
     if ($null -ne $serverProcess) {
         if (-not $serverProcess.HasExited) {

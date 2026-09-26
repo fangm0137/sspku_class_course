@@ -24,6 +24,8 @@ MySQL 使用 InnoDB，数据目录 `/var/lib/mysql` 挂载独立命名卷 `mysql
 
 T1.1 配置落点：backend 为 Go module，入口为 cmd/server。必需环境变量为 SESSION_SECRET、DB_HOST、DB_PORT、DB_NAME、DB_USER、DB_PASSWORD，缺失、空值或纯空白时启动失败，只报告变量名；DB_PORT 必须为 1–65535。HTTP_ADDR 可选，默认 127.0.0.1:8080，可显式配置内部容器监听地址；端口同样必须有效。保留密码/密钥原值，不自动裁剪。使用 go-sql-driver/mysql 构造延迟连接池，配置加载和 /health 均不执行数据库 ping；后续任务负责数据库结构与业务就绪检查。本轮不创建数据库表、认证或材料业务。
 
+T1.3 配置清单放在根目录 .env.example，全部赋值留空；当前 Go 不自动加载 .env。除上述 7 个读取项外，预留 SEED_TEACHER_A_PASSWORD、SEED_STUDENT_A1_PASSWORD、SEED_STUDENT_B1_PASSWORD 给第 3 组初始化，当前命令不读取。会话 8 小时、匿名会话/CSRF 30 分钟及卷内路径沿用固定策略，不新增环境开关。根目录 .gitignore 排除各层级本地凭据、数据和构建产物（允许 .env.example）；.dockerignore 用于仓库根构建上下文，连示例也排除，但保留 Go 源码与迁移 SQL。后续 Dockerfile 不通过 ARG/COPY 注入凭据、不依赖本地前端产物；当前未实现镜像。详细配置与验证边界见 backend/CONFIGURATION.md。
+
 ### 2. 身份、会话与密码
 
 预置账号包含唯一用户名、带随机盐的 scrypt 密码哈希、角色（teacher/student）、单一班级外键。单账号单班级是本迭代的数据模型约定。密码通过后续初始化时的环境变量提供，禁止源码默认密码及明文落库，日志不得记录密码或会话凭据。
@@ -36,6 +38,8 @@ CSRF 合同：前端先同源请求匿名可访问的 `GET /api/csrf`。没有�
 
 login/logout/upload 必须携带 `X-CSRF-Token` 请求头并通过同源校验；不支持表单字段替代。服务端核对 Cookie 对应行的 token 摘要和到期时间，失败返回 403 csrf_invalid。登录成功替换匿名或旧登录会话后，旧 token 随旧行失效；前端重新调用 /api/csrf 获取新 token 后才能上传或登出。登出删除会话后旧 token 同样失效。缺登录身份的受保护接口优先返回 401；匿名登录的 CSRF 校验不要求已有登录身份。查会话或写 token 时数据库不可用返回 503。令牌及会话 ID 均不得写入日志。
 
+T2.1 同源细化：写请求必须携带单一合法 Origin，按协议、主机、有效端口与当前请求匹配（默认端口归一化），缺失、null、多值或不匹配均为 403 csrf_invalid；不以 Referer 或表单 token 替代。GET /api/csrf 允许无 Origin 的同源浏览器/命令行访问；若带 Origin 则必须匹配。Sec-Fetch-Site 如存在，只接受 same-origin 或 none；其余拒绝 403。上述拒绝不访问数据库，受保护写请求仍先验证身份。协议由直接连接 TLS 决定，不信任 Forwarded/X-Forwarded-*；第 7 组 localhost HTTP Nginx 必须保留外部 Host，未来 TLS 终止代理需另行约定可信来源。令牌接口成功和失败都 no-store，不设置跨源许可头。会话 ID 和 token 均使用无填充 Base64URL 编码的随机 32 字节，摘要分别基于解码字节计算 HMAC-SHA256/SHA-256。到期时刻等于当前时间即失效。令牌轮换在事务中锁定会话行，提交后才返回 token 或新 Cookie；重复获取不会延长原会话期限。
+
 登录字段边界：请求必须为包含 username/password 字符串的 JSON 对象；username 长度为 1–64 个 Unicode 码点且不能全为空白，password 为 1–128 个 Unicode 码点。缺失、null、空串、超长、类型错误或非法 JSON 统一为 400 invalid_request；不回显字段名、长度或具体校验细节，不自动裁剪密码。格式合法后才做密码校验，错误凭据为 401 invalid_credentials。
 
 选择服务端会话而非客户端自包含会话，是为了支持即时吊销及登出后拒绝旧 Cookie 重放；代价是每次认证依赖 MySQL。账号不存在和密码错误均返回相同 401 信息，不泄露账号存在性。会话 ID 不进入 localStorage 或日志。
@@ -44,7 +48,7 @@ login/logout/upload 必须携带 `X-CSRF-Token` 请求头并通过同源校验�
 
 | 入口 | 行为 |
 | --- | --- |
-| `GET /api/csrf` | 匿名可访问，200 下发绑定当前匿名/登录会话的令牌；数据库不可用 503 |
+| `GET /api/csrf` | 匿名可访问，200 下发绑定当前匿名/登录会话的令牌；跨源 403，数据库不可用 503 |
 | `POST /api/login` | 校验用户名/密码，成功 200 并建立会话；失败 401 |
 | `POST /api/logout` | 有效会话及 CSRF 保护；删除会话并清 Cookie，成功 200；无效会话 401 |
 | `GET /api/me` | 有效会话返回 200 及当前身份、角色、班级；无效会话 401 |
@@ -96,7 +100,7 @@ Compose 对 MySQL 独立做就绪检查，Go 与 Nginx 使用存活检查；数�
 
 | 接口 | 成功状态与 JSON/内容 | 失败状态 |
 | --- | --- | --- |
-| GET /api/csrf | 200：`{"csrf_token":"<string>"}`，仅该安全入口可返回 CSRF token | 503 |
+| GET /api/csrf | 200：`{"csrf_token":"<string>"}`，仅该安全入口可返回 CSRF token | 403（跨源）、503 |
 | POST /api/login | 200：`{"user":{"id":<int>,"username":"<string>","role":"<role>","class_id":<int>}}`，同时设置新 Cookie | 400、401、403、503 |
 | POST /api/logout | 200：`{"ok":true}`，同时清 Cookie | 401、403、503 |
 | GET /api/me | 200：`{"id":<int>,"username":"<string>","role":"<role>","class_id":<int>}` | 401、503 |

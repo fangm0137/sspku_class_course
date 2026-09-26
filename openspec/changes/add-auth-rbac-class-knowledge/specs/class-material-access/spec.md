@@ -149,6 +149,10 @@
 - **WHEN** login/logout/upload 使用缺失、错误、超过 30 分钟或超过会话有效期的令牌，或使用会话替换前的旧令牌；受保护接口已通过身份检查
 - **THEN** 返回 403 csrf_invalid，无业务副作用；登录成功或再次获取令牌后旧令牌失效，登出删除会话后旧令牌失效；前端必须重新获取绑定新会话的令牌
 
+#### Scenario: Same origin CSRF enforcement
+- **WHEN** 写请求缺失或携带无效/跨源 Origin，或令牌获取请求携带跨源 Origin 或非 same-origin/none 的 Sec-Fetch-Site
+- **THEN** 按 design 的协议、主机、端口匹配规则返回 403 csrf_invalid，不执行写入；受保护写请求的身份检查仍优先。GET /api/csrf 所有响应均 no-store，不设置跨源许可头，重复获取不延长原会话期限
+
 ### Requirement: Local deployment health and persistence
 系统 SHALL 采用 Go 后端、MySQL 8.0、React 18 TypeScript Vite 前端及 Nginx 入口，提供 Docker Compose 本地部署方案；数据库（含服务端会话表）与上传原文件 MUST 持久化在容器外的命名卷中。匿名 `GET /health` SHALL 只表示进程存活，Go 可响应时返回 200 与 {"status":"ok"}，MUST NOT 查询数据库、认证会话或检查存储。依赖数据库的业务接口在数据库不可用时 MUST 返回 503，不泄露业务数据或配置。
 

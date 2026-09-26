@@ -30,7 +30,7 @@ func run(getenv func(string) string, serve func(*http.Server) error) error {
 	}
 	defer pool.Close()
 	server := &http.Server{
-		Addr: cfg.HTTPAddr, Handler: httpapi.NewHandler(),
+		Addr: cfg.HTTPAddr, Handler: httpapi.NewHandler(pool, cfg.SessionSecret),
 		ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	if err := serve(server); err != nil && !errors.Is(err, http.ErrServerClosed) {
