@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+.pytest_cache/
+project-src/week03-applied/instance/
+*.pyc
