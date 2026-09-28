@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$MySQLBin,
     [string]$GoCommand = 'go',
-    [ValidateSet('schema','csrf')][string]$Suite = 'schema'
+    [ValidateSet('schema','csrf','login','session','seed','materials','access','upload','frontend','health')][string]$Suite = 'schema'
 )
 $ErrorActionPreference = 'Stop'
 $backendDir = Split-Path $PSScriptRoot -Parent
@@ -14,7 +14,7 @@ $databaseName = 'campusclaw_schema_verify_' + [guid]::NewGuid().ToString('N')
 $testPassword = [guid]::NewGuid().ToString('N')
 $serverProcess = $null
 $savedEnv = @{}
-foreach ($key in @('DB_HOST','DB_PORT','DB_NAME','DB_USER','DB_PASSWORD','TEST_MYSQL8')) {
+foreach ($key in @('DB_HOST','DB_PORT','DB_NAME','DB_USER','DB_PASSWORD','TEST_MYSQL8','TEST_MYSQL_EXE','TEST_MYSQL_DATA')) {
     $savedEnv[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 
@@ -73,7 +73,33 @@ try {
     Write-Output 'COMMAND: go run ./cmd/migrate up (second run)'
     & $GoCommand run ./cmd/migrate up
     if ($LASTEXITCODE -ne 0) { throw 'second migration failed' }
-    if ($Suite -eq 'csrf') {
+    if ($Suite -eq 'health') {
+        $env:TEST_MYSQL_EXE = $serverExe
+        $env:TEST_MYSQL_DATA = $dataDir
+        Write-Output 'COMMAND: go test ./internal/httpapi -run "TestAnonymousHealth|TestMySQL8HealthRecovery" -v -count=1 -timeout 120s'
+        & $GoCommand test ./internal/httpapi -run 'TestAnonymousHealth|TestMySQL8HealthRecovery' -v -count=1 -timeout 120s
+    } elseif ($Suite -eq 'frontend') {
+        Write-Output 'COMMAND: go test ./internal/httpapi -run TestMySQL8Frontend -v -count=1 -timeout 180s'
+        & $GoCommand test ./internal/httpapi -run TestMySQL8Frontend -v -count=1 -timeout 180s
+    } elseif ($Suite -eq 'upload') {
+        Write-Output 'COMMAND: go test ./internal/httpapi -run TestMySQL8Upload -v -count=1'
+        & $GoCommand test ./internal/httpapi -run TestMySQL8Upload -v -count=1
+    } elseif ($Suite -eq 'access') {
+        Write-Output 'COMMAND: go test ./internal/httpapi -run TestMySQL8Access -v -count=1'
+        & $GoCommand test ./internal/httpapi -run TestMySQL8Access -v -count=1
+    } elseif ($Suite -eq 'materials') {
+        Write-Output 'COMMAND: go test ./cmd/seed-materials -run TestMySQL8MaterialSeed -v -count=1'
+        & $GoCommand test ./cmd/seed-materials -run TestMySQL8MaterialSeed -v -count=1
+    } elseif ($Suite -eq 'seed') {
+        Write-Output 'COMMAND: go test ./cmd/seed -run TestMySQL8Seed -v -count=1'
+        & $GoCommand test ./cmd/seed -run TestMySQL8Seed -v -count=1
+    } elseif ($Suite -eq 'session') {
+        Write-Output 'COMMAND: go test ./internal/httpapi -run TestMySQL8Session -v -count=1'
+        & $GoCommand test ./internal/httpapi -run TestMySQL8Session -v -count=1
+    } elseif ($Suite -eq 'login') {
+        Write-Output 'COMMAND: go test ./internal/httpapi -run TestMySQL8Login -v -count=1'
+        & $GoCommand test ./internal/httpapi -run TestMySQL8Login -v -count=1
+    } elseif ($Suite -eq 'csrf') {
         Write-Output 'COMMAND: go test ./internal/httpapi -run TestMySQL8CSRF -v -count=1'
         & $GoCommand test ./internal/httpapi -run TestMySQL8CSRF -v -count=1
     } else {

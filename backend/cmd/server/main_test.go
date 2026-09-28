@@ -3,12 +3,14 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
 
 func testEnvironment() map[string]string {
 	return map[string]string{
+		"UPLOAD_DIR":     os.TempDir(),
 		"SESSION_SECRET": "test-only-secret", "DB_HOST": "unreachable.invalid",
 		"DB_PORT": "3306", "DB_NAME": "test_db", "DB_USER": "test_user", "DB_PASSWORD": "test-only-password",
 	}

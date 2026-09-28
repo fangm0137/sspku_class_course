@@ -26,6 +26,10 @@
 - **WHEN** 教师 A、学生 A1、学生 B1 分别提交正确账号密码
 - **THEN** 各自登录成功，可使用自己的会话请求材料接口
 
+#### Scenario: Browser session recovery and service failure
+- **WHEN** 页面刷新恢复会话，或已登录用户刷新材料/退出时收到 503；请求恢复后由用户重试
+- **THEN** 已知身份在 503 时保持，首次加载无法确认身份时显示可重试状态，不误显示已退出；仅明确的受保护请求 401 清除身份和材料；登录成功后重新获取 CSRF token，token 不持久化到 Web Storage
+
 #### Scenario: Invalid credentials
 - **WHEN** 使用不存在的账号或错误密码登录
 - **THEN** 均返回相同的 401 错误，不建立有效会话
@@ -33,6 +37,10 @@
 #### Scenario: Malformed login input
 - **WHEN** 携带有效匿名 CSRF 令牌提交缺失字段、null、空串、超长、类型错误或非法 JSON 的登录请求；username 合法长度为 1–64 个 Unicode 码点且不能全空白，password 为 1–128 个 Unicode 码点
 - **THEN** 返回 400 invalid_request 且不建立已登录会话，统一安全消息不泄露字段校验细节
+
+#### Scenario: Login request envelope
+- **WHEN** 有效 CSRF 请求使用非 application/json、超过 16 KiB 的请求体、重复字段名、尾随多个 JSON 值或非法 UTF-8
+- **THEN** 返回同形 400 invalid_request，不建立登录会话；多余的角色与班级字段被忽略，身份只能来自数据库账号
 
 #### Scenario: Anonymous or invalid session access
 - **WHEN** 请求未携带会话、携带伪造会话或已过期会话，并访问列表、详情、文件或上传入口
@@ -95,6 +103,10 @@
 - **WHEN** 已授权教师上传非 txt/md、超过 5 MiB 的文件，或缺文件、多文件、空白文本、非法 UTF-8 内容
 - **THEN** 超限返回 413，其余情况均返回 400，不创建材料或知识库记录，不保留最终文件
 
+#### Scenario: Multipart and filename boundaries
+- **WHEN** 已授权且通过 CSRF 的教师提交错误文件字段、损坏 multipart、安全展示名超过 255 码点，或总请求超过 5 MiB + 64 KiB
+- **THEN** 总请求超限为 413，其余为 400，不创建文件或记录；原文件中的 BOM 保留，提取文本只移除首个 UTF-8 BOM
+
 #### Scenario: Failed ingestion
 - **WHEN** 保存文件、提取文本或写入任一数据库记录发生确定的失败，事务尚未提交
 - **THEN** 返回 500（数据库不可用为 503），不暴露内部路径或堆栈，列表中没有半成品，材料和知识库记录均不提交；执行一次文件补偿，遗留临时或孤儿文件在业务就绪前清理。持续清理失败保持业务未就绪并等待人工处理，不实现自动重试策略；health 不等待清理
@@ -121,6 +133,10 @@
 #### Scenario: No static bypass
 - **WHEN** 未登录者尝试通过文件存储路径或知识库路径直接访问材料
 - **THEN** 不能获取任何材料数据，应用不提供绕过认证和班级授权的读取入口
+
+#### Scenario: Invalid material identifier and missing content
+- **WHEN** 已登录用户请求非规范正整数材料 ID，或其本班材料存在但关联正文/原文件缺失或不可读
+- **THEN** 非规范 ID 与不存在材料同形返回 404；已授权但内容损坏返回安全 500，不泄露路径；未登录仍优先返回 401
 
 ### Requirement: Credential and content safety
 系统 MUST 仅持久化带随机盐的密码哈希，不将明文密码写入数据库、文件或日志；服务端会话索引摘要密钥 SESSION_SECRET MUST 从环境提供，缺失或空值时启动失败，不得存在默认密钥。会话表 MUST 仅保存会话 ID 的密钥摘要，Cookie 中的原始 ID 不得写入日志或 localStorage。材料展示 SHALL 转义文本，文件 SHALL 以附件下载，文件名不能控制存储路径；Cookie 写操作 MUST 受到 CSRF 保护。

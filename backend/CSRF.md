@@ -1,6 +1,6 @@
 # CSRF 接口（T2.1）
 
-当前仅新增 `GET /api/csrf`；写请求校验组件通过测试 handler 验证，尚未注册 login/logout/upload。先配置环境、迁移数据库并启动 Go，按 backend README 操作。没有有效 Cookie 时建立 30 分钟匿名会话；匿名 Cookie 不代表已登录。
+`GET /api/csrf` 已接入，写请求校验组件已用于 POST /api/login 和 POST /api/logout；尚未注册 upload。先配置环境、迁移数据库并启动 Go，按 backend README 操作。没有有效 Cookie 时建立 30 分钟匿名会话；匿名 Cookie 不代表已登录。完整认证调用顺序见 [AUTH.md](AUTH.md)。
 
 成功为 200 application/json，正文仅 `{"csrf_token":"<Base64URL token>"}`。首次返回 `campusclaw_session` Cookie：HttpOnly、SameSite=Lax、Path=/、30 分钟，直接 HTTPS 连接另设 Secure。有效旧会话不换 Cookie、不续期。再次获取会替换该会话旧 token；新 token 最多 30 分钟且不超过会话到期时间，边界时刻即无效。
 
@@ -17,6 +17,6 @@ $csrfResponse.StatusCode
 $csrfResponse.Headers['Cache-Control']
 ```
 
-预期只显示 200 和 no-store。后续写请求复用 campusSession，并携带 `Origin: http://127.0.0.1:8080` 与 `X-CSRF-Token`；此时登录等接口仍未实现。不要打印变量内容、保存会话转储或将其放进命令参数。未来登录替换会话后必须重新获取 token。
+预期只显示 200 和 no-store。写请求复用 campusSession，并携带 `Origin: http://127.0.0.1:8080` 与 `X-CSRF-Token`；登录步骤见 [LOGIN.md](LOGIN.md)。不要打印变量内容、保存会话转储或将其放进命令参数。登录替换会话后必须重新获取 token。
 
 本轮测试的受保护 handler 在 CSRF 前检查有效登录身份，匿名/无效/到期会话为 401 `unauthenticated / 请先登录`，合法登录身份的错误 token 为 403；无法查询身份为 503。测试用户由隔离 fixture 插入，密码为随机输入计算的 scrypt 哈希，不是产品种子。独立验证与实际输出见 [VERIFY-T2.1.md](VERIFY-T2.1.md)。

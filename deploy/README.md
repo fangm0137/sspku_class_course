@@ -1,0 +1,126 @@
+# 本地容器部署、停止与恢复
+
+部署文件及流程已在 Docker Desktop Linux Engine 29.8.0 上验证：镜像构建、串行初始化、Nginx 代理、保留卷重建以及恢复到全新项目均通过。真实命令和结果见 VERIFY-T7.md；第 8 组三账号访问矩阵、过期 Cookie 和全部 Scenario 证据也已完成，见 VERIFY-T8.md 和 SCENARIO-EVIDENCE.md。
+
+## 前提与配置
+
+使用 Docker Desktop 的 Linux containers 模式及 Docker Compose v2；Windows 示例使用 PowerShell 7.4+，以保证原生程序重定向二进制备份时不改写字节。所有命令从仓库根目录执行。
+
+三个服务为 mysql（MySQL 8.0）、api（Go）、nginx（Vite 静态页面及反向代理）。仅 Nginx 绑定 `127.0.0.1:8080`；可用 CAMPUSCLAW_PORT 改端口。MySQL 与 API 不发布宿主机端口。mysql_data 持久化 MySQL 全部数据，包括 sessions；material_data 挂载 API 的 /data，含 uploads 和 staging。Nginx 不挂载材料卷。
+
+必需环境项为 SESSION_SECRET、DB_PASSWORD、MYSQL_ROOT_PASSWORD；初始化另需三个 SEED_*_PASSWORD。DB_NAME 和 DB_USER 在 Compose 中默认 campusclaw，DB_USER 必须为非 root 独立应用账号。容器固定 DB_HOST=mysql、DB_PORT=3306、HTTP_ADDR=0.0.0.0:8080、UPLOAD_DIR=/data/uploads；不使用本机开发目录。MYSQL_ROOT_PASSWORD 仅传给 MySQL，API 不获得 root 密码。
+
+从环境或凭据管理工具提供真实值。可交互读入，避免明文出现在命令历史：
+
+```powershell
+function Set-PrivateEnvironmentValue([string]$VariableName) {
+    $value = Read-Host "输入 $VariableName" -AsSecureString
+    try {
+        [Environment]::SetEnvironmentVariable($VariableName, [Net.NetworkCredential]::new('', $value).Password, 'Process')
+    } finally { $value.Dispose() }
+}
+Set-PrivateEnvironmentValue 'SESSION_SECRET'
+Set-PrivateEnvironmentValue 'DB_PASSWORD'
+Set-PrivateEnvironmentValue 'MYSQL_ROOT_PASSWORD'
+Set-PrivateEnvironmentValue 'SEED_TEACHER_A_PASSWORD'
+Set-PrivateEnvironmentValue 'SEED_STUDENT_A1_PASSWORD'
+Set-PrivateEnvironmentValue 'SEED_STUDENT_B1_PASSWORD'
+```
+
+SESSION_SECRET 应由可信随机源产生并安全保管，重建时使用同一值，不每次重新生成。若使用本地 .env，复制根 .env.example 后填写并保留 Git 忽略；Compose 会读取它，原生 Go 不会自动读取。不要输出完整 `docker compose config`、环境、Cookie 或请求头；配置静默验证使用 `docker compose config --quiet`。verify-config.ps1 使用随机测试值在内存解析配置，不打印秘密。
+
+## 首次串行初始化与启动
+
+每一步必须成功后再执行下一步。不要在 API 运行时执行材料初始化。
+
+```powershell
+docker compose config --quiet
+docker compose build
+docker compose up -d --wait mysql
+docker compose run --rm --no-deps --entrypoint /app/migrate api up
+docker compose run --rm --no-deps --entrypoint /app/seed -e SEED_TEACHER_A_PASSWORD -e SEED_STUDENT_A1_PASSWORD -e SEED_STUDENT_B1_PASSWORD api
+docker compose run --rm --no-deps --entrypoint /app/seed-materials api
+docker compose up -d --wait api nginx
+docker compose ps
+```
+
+一次性命令基于 api 服务镜像，不增加常驻服务。首次输出分别为 migrations applied、accounts initialized、material seed initialized。重复初始化要先停止 nginx/api，使用相同卷和数据库；正常串行重跑输出 no change，不重置账号密码。出现冲突应检查而非删卷强行重建。
+
+打开 http://127.0.0.1:8080，使用教师 A、学生 A1、学生 B1 初始化密码登录，页面操作见 ../frontend/README.md。Go 启动恢复执行完成前业务可能 503；/health 的 200 只代表进程存活，`up --wait` 的 health 通过不代表所有业务已就绪。
+
+## 九个路由与故障验收
+
+| 方法 | 路由 | 用途 |
+| --- | --- | --- |
+| GET | /health | 匿名进程存活 |
+| GET | /api/csrf | 获取绑定当前会话的 token |
+| POST | /api/login | 登录 |
+| GET | /api/me | 身份恢复 |
+| POST | /api/logout | 吊销当前会话 |
+| POST | /api/materials | 教师上传 |
+| GET | /api/materials | 本班列表 |
+| GET | /api/materials/{id} | 本班详情及 text |
+| GET | /api/materials/{id}/file | 本班原文件附件 |
+
+Nginx 保留 Host 与路径，/api/ 和 /health 不回退成 React HTML；不缓存响应、不重试写请求。请求体流式转发，大小限制由 Go 在授权后执行。API 无法连接或超时时入口返回 JSON 503 error/message，不能返回静态 health 成功。Docker DNS 动态解析避免 API 重建换 IP 后仍访问旧地址。
+
+运行验收清单（T7 已完成教师 5 MiB 上传下载、九路由与 Go 停机/恢复，完整矩阵见 T8 已执行记录）：教师上传恰好 5 MiB TXT 后下载核对字节；A1 可见、B1 不可见；学生直接上传 403、匿名 401；未知 /api/ 路径仍为 JSON。登录后停止 MySQL，health 应 200、材料为 503；启动 MySQL 后原 Cookie 可继续访问。停止 api 后经 Nginx 的 health 应为安全 JSON 503，启动 api 后恢复。不要把 503 当作账号退出或自动重放上传。
+
+```powershell
+docker compose stop mysql
+# 验证 health 200 / 材料 503
+docker compose up -d --wait mysql
+# 验证原 Cookie 与材料恢复
+docker compose stop api
+# 验证经 Nginx /health 为 JSON 503
+docker compose up -d --wait api
+```
+
+## 停止与保留卷重建
+
+日常停止：`docker compose stop`；保留容器恢复：`docker compose up -d --wait`。删除并重建容器：
+
+```powershell
+docker compose down
+docker compose up -d --wait
+```
+
+不运行 `down -v`、`volume prune` 或删除命名卷。down 默认保留卷；重建需要原数据库密码和相同 SESSION_SECRET。修改初始化密码环境变量不会改变已有 MySQL/应用账号密码。保留两个卷并不自动保留外部环境配置，必须另行安全保管。完整的未过期 Cookie、过期 Cookie、原文件哈希、两表记录验收已在第 8 组通过。
+
+## 一致备份
+
+选择受保护的仓库外目录，设置 `$backup` 为其绝对路径，确保目录存在。先停止 nginx/api，保持 MySQL 运行，阻止写入、初始化和文件清理；同时备份数据库和文件，不只复制其中之一：
+
+```powershell
+docker compose stop nginx api
+docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysqldump --user="$MYSQL_USER" --default-character-set=utf8mb4 --single-transaction --no-tablespaces --set-gtid-purged=OFF "$MYSQL_DATABASE"' > "$backup/database.sql"
+docker compose run --rm -T --no-deps --entrypoint tar api -C /data -czf - uploads staging > "$backup/materials.tar.gz"
+# 两个命令都成功后，分别记录文件大小和 SHA-256，并安全保存配置与原 SESSION_SECRET。
+Get-FileHash "$backup/database.sql", "$backup/materials.tar.gz" -Algorithm SHA256
+docker compose up -d --wait api nginx
+```
+
+备份包含密码哈希、会话索引、教学内容，应限制访问，不提交到 Git。不要输出 SQL 正文。导出失败不得视为可恢复备份；不要为取得成功而删除现有卷。
+
+## 恢复到全新隔离项目
+
+先提供与备份匹配的 DB_NAME、DB_USER、DB_PASSWORD、MYSQL_ROOT_PASSWORD、SESSION_SECRET，使用不同入口端口，例如 CAMPUSCLAW_PORT=8081。确认新项目没有需保留的数据，不能向正在使用的旧库覆盖导入。以下新项目名仅是恢复演练示例：
+
+```powershell
+docker compose -p campusclaw-restore build
+docker compose -p campusclaw-restore up -d --wait mysql
+docker compose -p campusclaw-restore cp "$backup/database.sql" mysql:/tmp/campusclaw-restore.sql
+docker compose -p campusclaw-restore exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql --user="$MYSQL_USER" --default-character-set=utf8mb4 "$MYSQL_DATABASE" < /tmp/campusclaw-restore.sql'
+docker compose -p campusclaw-restore run --rm -T --no-deps --volume "${backup}:/restore:ro" --entrypoint tar api -C /data -xzf /restore/materials.tar.gz
+docker compose -p campusclaw-restore up -d --wait api nginx
+```
+
+数据库导入与文件恢复都成功后才启动 API 的清理逻辑。验证账号、材料、文件哈希、两表关联及班级隔离；未过期会话只有在原 SESSION_SECRET 和会话表都保留时才可能继续有效，过期不会延长。上述流程已在隔离容器执行：原会话、材料/知识库正文和文件 SHA-256 均匹配；完整三账号矩阵与过期会话已由第 8 组验收通过。
+
+本迭代不做生产高可用、SSO、注册找回、问答、聊天、作业流程、并发初始化、持续清理自动重试、分页、配额或上传幂等键。
+
+配置参考：[Compose 启动顺序](https://docs.docker.com/compose/how-tos/startup-order/)、[Nginx 代理指令](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)。
+
+## 最终验收复现
+
+在 PowerShell 7.5+、Docker Linux 引擎已启动的环境，从仓库根执行 ./deploy/verify-e2e.ps1。脚本创建随机隔离项目、临时测试凭据和 localhost 端口，结束停止容器并保留测试卷；不启动长期使用的默认项目。真实命令、结果及限制见 [VERIFY-T8.md](VERIFY-T8.md)。

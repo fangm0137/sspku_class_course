@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -10,6 +11,7 @@ import (
 // Config is loaded once at startup. Do not log it: it contains credentials.
 type Config struct {
 	HTTPAddr      string
+	UploadDir     string
 	SessionSecret string
 	Database      Database
 }
@@ -32,6 +34,10 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	uploadDir := getenv("UPLOAD_DIR")
+	if strings.TrimSpace(uploadDir) == "" || !filepath.IsAbs(uploadDir) {
+		return Config{}, fmt.Errorf("invalid required configuration: UPLOAD_DIR must be absolute")
+	}
 	addr := getenv("HTTP_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:8080"
@@ -45,7 +51,7 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid configuration: HTTP_ADDR port must be between 1 and 65535")
 	}
 	return Config{
-		HTTPAddr: addr, SessionSecret: getenv("SESSION_SECRET"),
+		HTTPAddr: addr, SessionSecret: getenv("SESSION_SECRET"), UploadDir: filepath.Clean(uploadDir),
 		Database: database,
 	}, nil
 }

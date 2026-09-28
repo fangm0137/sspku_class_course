@@ -1,12 +1,14 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
 func validEnvironment() map[string]string {
 	return map[string]string{
+		"UPLOAD_DIR":     os.TempDir(),
 		"SESSION_SECRET": "test-only-not-a-real-secret", "DB_HOST": "db.invalid",
 		"DB_PORT": "3306", "DB_NAME": "test_db", "DB_USER": "test_user",
 		"DB_PASSWORD": "test-only-not-a-real-password",

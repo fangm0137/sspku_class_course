@@ -1,0 +1,2 @@
+CLASS_B_SEED_ONLY
+Class B reference material, initialized as a seed.

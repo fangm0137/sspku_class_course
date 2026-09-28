@@ -31,6 +31,7 @@ func open(cfg config.Database, multiStatements bool) (*sql.DB, error) {
 	driverConfig.ParseTime = true
 	driverConfig.MultiStatements = multiStatements
 	driverConfig.Loc = time.UTC
+	driverConfig.Params = map[string]string{"time_zone": "'+00:00'"}
 	driverConfig.Timeout = 5 * time.Second
 	driverConfig.ReadTimeout = 5 * time.Second
 	driverConfig.WriteTimeout = 5 * time.Second

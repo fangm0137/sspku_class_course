@@ -19,7 +19,7 @@ import (
 const sessionCookie = "campusclaw_session"
 const csrfLifetime = 30 * time.Minute
 
-// Security owns session-backed CSRF checks. It does not implement login or roles.
+// Security owns login and session-backed CSRF checks. It does not implement roles.
 type Security struct {
 	db     *sql.DB
 	secret []byte
@@ -185,7 +185,7 @@ func (s *Security) CSRF(w http.ResponseWriter, r *http.Request) {
 }
 
 // ProtectWrite checks identity first when required, then origin and the bound token.
-// Until later tasks register business routes it is exercised with test handlers only.
+// Login allows anonymous sessions; protected business handlers require login.
 func (s *Security) ProtectWrite(next http.Handler, requireLogin bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !requireLogin && !sameOrigin(r, true) {
