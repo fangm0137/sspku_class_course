@@ -1,8 +1,8 @@
 # CampusClaw 班级资料室
 
-React 18 + TypeScript + Vite 前端。登录后显示本班材料；教师可以上传 TXT/MD，学生只能阅读及下载；侧栏「知识问答」可就本班材料提问并给出带 `[1][2]` 出处的简短回答。页面不提供班级切换、注册、聊天或作业流程。
+React 18 + TypeScript + Vite 前端。登录后显示本班材料；教师可以上传 TXT/MD，学生只能阅读及下载；侧栏「知识检索」可就本班材料做 `keyword`/`vector`/`hybrid` 三种模式的检索并列出可回溯的命中切片，「知识问答」可提问并给出带 `[1][2]` 出处的简短回答。教师还能在材料预览里按 `auto`/`hierarchy`/`custom` 显式重建该材料的检索索引。页面不提供班级切换、注册、聊天或作业流程。
 
-> 知识问答的规约与实测记录见 `openspec/specs/knowledge-qa/spec.md` 与 `openspec/changes/archive/2026-09-30-add-class-scoped-qa/`；本文件只描述前端行为。
+> 检索与问答的规约与实测记录见 `openspec/specs/knowledge-qa/spec.md`、`openspec/changes/add-traceable-vector-retrieval/` 与 `openspec/changes/archive/2026-09-30-add-class-scoped-qa/`；接口字段与降级口径见 [backend/SEARCH.md](../backend/SEARCH.md)。本文件只描述前端行为。
 
 ## 本地启动
 

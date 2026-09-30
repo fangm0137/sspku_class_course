@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -30,8 +31,16 @@ func run(getenv func(string) string, serve func(*http.Server) error) error {
 		return err
 	}
 	defer pool.Close()
+	retrieval := rag.New(pool, rag.FromEnv(getenv))
+	// 集合初始化失败不阻止启动：keyword 仍可用，vector/hybrid 会如实返回 503。
+	// 未配置嵌入网关时这一步是空操作，启动不依赖任何外部服务。
+	ensureCtx, cancelEnsure := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := retrieval.EnsureCollection(ensureCtx); err != nil {
+		log.Print("qdrant collection is not ready; vector retrieval reports dependency failure until it is")
+	}
+	cancelEnsure()
 	server := &http.Server{
-		Addr: cfg.HTTPAddr, Handler: httpapi.NewApplication(pool, cfg.TokenSecret, cfg.UploadDir, rag.New(pool, rag.FromEnv(getenv))),
+		Addr: cfg.HTTPAddr, Handler: httpapi.NewApplication(pool, cfg.TokenSecret, cfg.UploadDir, retrieval),
 		ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	if err := serve(server); err != nil && !errors.Is(err, http.ErrServerClosed) {

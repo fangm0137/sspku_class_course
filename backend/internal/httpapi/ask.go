@@ -26,16 +26,26 @@ type askHandler struct {
 type askCitation struct {
 	MaterialID  uint64 `json:"material_id"`
 	Title       string `json:"title"`
+	ChunkID     uint64 `json:"chunk_id"`
 	ChunkIndex  int    `json:"chunk_index"`
-	StartOffset int    `json:"start_offset"`
-	EndOffset   int    `json:"end_offset"`
+	StartOffset int    `json:"char_start"`
+	EndOffset   int    `json:"char_end"`
 	Excerpt     string `json:"excerpt"`
 	Citation    int    `json:"citation"`
 }
 
+// askReference 只含 [n] 标注需要的标识，顺序与回答里的 [1]、[2] 完全一致。
+type askReference struct {
+	MaterialID uint64 `json:"material_id"`
+	Title      string `json:"title"`
+	ChunkID    uint64 `json:"chunk_id"`
+	ChunkIndex int    `json:"chunk_index"`
+}
+
 type askReply struct {
-	Answer string        `json:"answer"`
-	Hits   []askCitation `json:"hits"`
+	Answer string         `json:"answer"`
+	Hits   []askCitation  `json:"hits"`
+	Cite   []askReference `json:"citations"`
 }
 
 // parseAsk 只接受单个 JSON 对象与唯一的 question 字段，规则与登录一致。
@@ -112,16 +122,24 @@ func (a askHandler) ask(w http.ResponseWriter, r *http.Request) {
 		securityError(w, 503)
 		return
 	}
-	reply := askReply{Answer: answer, Hits: make([]askCitation, 0, len(hits))}
+	reply := askReply{Answer: answer, Hits: make([]askCitation, 0, len(hits)), Cite: make([]askReference, 0, len(hits))}
 	for index, hit := range hits {
+		title := displayName(hit.Title)
 		reply.Hits = append(reply.Hits, askCitation{
 			MaterialID:  hit.MaterialID,
-			Title:       displayName(hit.Title),
+			Title:       title,
+			ChunkID:     hit.ChunkID,
 			ChunkIndex:  hit.ChunkIndex,
 			StartOffset: hit.StartOffset,
 			EndOffset:   hit.EndOffset,
 			Excerpt:     hit.Text,
 			Citation:    index + 1,
+		})
+		reply.Cite = append(reply.Cite, askReference{
+			MaterialID: hit.MaterialID,
+			Title:      title,
+			ChunkID:    hit.ChunkID,
+			ChunkIndex: hit.ChunkIndex,
 		})
 	}
 	jsonReply(w, 200, reply)

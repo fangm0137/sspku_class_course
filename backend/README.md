@@ -2,7 +2,7 @@
 
 三账号、样本、环境密码输入及初始化顺序见 [验收账号与材料样本](FIXTURES.md)。材料读取与班级隔离见 [MATERIALS.md](MATERIALS.md)，教师上传、事务补偿和恢复见 [UPLOAD.md](UPLOAD.md)，真实证据见 [VERIFY-T5.md](VERIFY-T5.md)。
 
-当前已实现 Go 服务、配置、MySQL 迁移、显式账号及 B 班材料初始化、三个材料样本、health、login、me、logout、材料上传/列表/详情/附件下载，以及**本班知识问答**（上传时按 auto 切分写入 `knowledge_chunks`，`POST /api/ask` 按班检索后生成带 `[1][2]` 出处的回答）。认证采用无状态 JWT：登录签发 8 小时 token，受保护接口只认 `Authorization: Bearer`，不再有会话 Cookie 与 CSRF。检索用 MySQL ngram 全文索引，配置 `EMBEDDING_*` 后自动叠加 Qdrant 向量路径并按 RRF 融合。[React 页面](../frontend/README.md)与 Compose/Nginx 已接入；health 成功不代表业务就绪。启动先在后台执行一次文件恢复，完成前业务 503；恢复失败需人工处理后重启。认证使用见 [AUTH.md](AUTH.md)，token 结构与校验见 [TOKEN.md](TOKEN.md)。
+当前已实现 Go 服务、配置、MySQL 迁移、显式账号及 B 班材料初始化、三个材料样本、health、login、me、logout、材料上传/列表/详情/附件下载，以及**本班知识检索与问答**：上传时按 `auto` 切分写入 `knowledge_chunks`，`GET /api/search` 支持 `keyword`/`vector`/`hybrid` 三种模式，`POST /api/ask` 按班检索后生成带 `[1][2]` 出处的回答，`POST /api/materials/{id}/reindex` 供教师按新策略显式重建索引。认证采用无状态 JWT：登录签发 8 小时 token，受保护接口只认 `Authorization: Bearer`，不再有会话 Cookie 与 CSRF。检索用 MySQL ngram 全文索引，配置 `EMBEDDING_*` 后自动叠加 Qdrant 向量路径并按 RRF 融合；两类网关与向量库都只由服务端调用。检索接口、字段、切分策略与降级口径见 [SEARCH.md](SEARCH.md)。[React 页面](../frontend/README.md)与 Compose/Nginx 已接入；health 成功不代表业务就绪。启动先在后台执行一次文件恢复，完成前业务 503；恢复失败需人工处理后重启。认证使用见 [AUTH.md](AUTH.md)，token 结构与校验见 [TOKEN.md](TOKEN.md)。
 
 模块当前最低要求 Go 1.26.0（新增依赖要求）；本轮使用 Go 1.27.1 验证，MySQL 驱动固定为 v1.10.1，golang-migrate 为 v4.20.1。在本目录执行：
 
@@ -39,7 +39,9 @@ go run ./cmd/migrate up
 
 第一次输出 `migrations applied`，第二次输出 `no change`。SQL 在 migrations 中并嵌入命令；没有 ORM、业务 seed 或 HTTP 启动自动建表。schema_migrations 保存版本/dirty 状态。MySQL DDL 不是整体事务：失败时检查 dirty 和实际表状态，不自动 force。已提供 down SQL 以明确逆迁移，但 CLI 仅开放 up，避免误删数据；本轮未验证 down。
 
-000001 建立 classes/users/sessions/materials/knowledge_entries 与迁移元数据表；000002 `drop_sessions` 删除已废弃的会话表，因此当前是四张业务表加一张迁移元数据表。materials、knowledge_entries 均有非空 class_id 和独立索引；知识库复合外键确保班级与材料一致。password_hash 的 CHECK 只验证编码形式；cmd/seed 计算真实 scrypt 哈希，登录接口执行校验。
+000001 建立 classes/users/sessions/materials/knowledge_entries 与迁移元数据表；000002 `drop_sessions` 删除已废弃的会话表，因此当前是四张业务表加一张迁移元数据表；000003 增加 `knowledge_chunks`（ngram 全文索引 + 与 materials 的复合外键 + 偏移 CHECK），000004 把它的字段对齐第 4 课规约（`char_start`/`char_end`/`strategy`/`index_status`）并补齐 `knowledge_entry_id`。materials、knowledge_entries 均有非空 class_id 和独立索引；知识库复合外键确保班级与材料一致。password_hash 的 CHECK 只验证编码形式；cmd/seed 计算真实 scrypt 哈希，登录接口执行校验。
+
+`knowledge_chunks.char_start`/`char_end` 是字符区间，基准为**预处理后**正文的字节偏移：未启用预处理时与 `body_text` 下标一致，启用移除链接/邮箱或折叠空白后以预处理文本为准。`strategy` 记录本次建索引使用的策略（`auto`/`custom`/`hierarchy`），`index_status` 记录该切片能否被检索（`ready`/`pending`/`failed`）。
 
 ## 显式账号初始化（T3.1）
 

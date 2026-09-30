@@ -30,3 +30,28 @@
 .ask-input-row input::placeholder{color:#a5ada5}
 .ask-input-row .primary{white-space:nowrap}
 @media(max-width:700px){.nav-list{flex-direction:row;gap:8px;overflow-x:auto}.nav-item{white-space:nowrap;padding:9px 12px}.ask-panel{padding:18px}.ask-user{max-width:100%}}
+
+/* 知识检索视图：沿用既有配色与圆角，只新增检索表单、命中列表与重建索引控件。 */
+.search-panel{background:#fff;border:1px solid #e0e6dc;border-radius:10px;padding:25px;display:flex;flex-direction:column;gap:20px;min-height:420px}
+.search-form{display:flex;flex-direction:column;gap:12px;border-bottom:1px solid #edf0e8;padding-bottom:20px}
+.search-input-row{display:flex;gap:10px}
+.search-input-row input{flex:1;padding:13px;border:1px solid #d9dfd6;border-radius:7px;background:white;color:#243e34;min-width:0}
+.search-input-row input::placeholder{color:#a5ada5}
+.search-input-row .primary{white-space:nowrap}
+.mode-group{border:none;margin:0;padding:0;display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.mode-group legend{font-size:13px;font-weight:600;padding:0 8px 0 0;float:left}
+.mode-chip{display:inline-flex;align-items:center;gap:7px;border:1px solid #d9dfd6;border-radius:999px;padding:7px 15px;font-size:13px;color:#4c6b5c;cursor:pointer;background:#fbfcf8}
+.mode-chip.active{border-color:#8fae87;background:#e7efe1;color:#214f3f;font-weight:600}
+.mode-chip input{accent-color:#5c8a63;margin:0}
+.hit-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:18px}
+.hit-list li{border:1px solid #e5eadf;border-radius:9px;padding:16px 18px;background:#fcfdfa;display:flex;flex-direction:column;gap:10px}
+.hit-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline}
+.hit-head strong{font-size:14px;color:#243e34}
+.hit-meta{font-size:11px;color:#78916d;font-weight:600}
+.hit-text{font-family:"Segoe UI","Microsoft YaHei",sans-serif;white-space:pre-wrap;overflow-wrap:anywhere;background:#f7f8f4;border:1px solid #e9ede3;border-radius:7px;margin:0;padding:12px 14px;font-size:12px;line-height:1.8;max-height:200px;overflow:auto;color:#4b625a}
+.hit-list .text-button{align-self:flex-start;font-size:12px}
+.reindex-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:4px 0 12px;padding:12px 14px;border:1px solid #e5eadf;border-radius:8px;background:#fafbf6}
+.reindex-row label{font-size:12px;font-weight:600;color:#6c7e60}
+.reindex-row select{padding:7px 10px;border:1px solid #d9dfd6;border-radius:6px;background:#fff;color:#243e34;font-size:12px}
+.reindex-row .muted{font-size:11px;flex:1 1 180px;min-width:0}
+@media(max-width:700px){.search-panel{padding:18px}.search-input-row{flex-direction:column}.mode-group legend{float:none;display:block;padding-bottom:6px}}

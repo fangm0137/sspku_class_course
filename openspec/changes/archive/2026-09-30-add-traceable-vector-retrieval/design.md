@@ -100,3 +100,14 @@ Compose 增加 `qdrant` 服务与独立命名卷 `qdrant_data`（集合持久化
 - 对话网关的模型与超时/重试口径：实现时按 design 的失败约定固定，不改动规约。
 
 `GET /health` 与错误优先级沿用 `openspec/specs/class-material-access/spec.md`；本变更不修改该能力的需求。
+
+## 实现补充
+
+以下为实现阶段在规约范围内的落定细节，逐项都能在代码与实测里核对。
+
+1. **字段命名统一**：`knowledge_chunks` 的 `start_offset`/`end_offset`/`split_mode`/`embed_status` 更名为 `char_start`/`char_end`/`strategy`/`index_status`（迁移 000004），并补齐非空 `knowledge_entry_id`（回填后加外键）。因此本变更的 delta 同时包含 `specs/knowledge-qa/spec.md` 的 MODIFIED 需求：字段名对齐，`strategy` 取值集合加入 `hierarchy`，行为不变。
+2. **模块落位**：切分、融合、网关与向量库客户端合并落在 `backend/internal/rag/`（单个包，全标准库），HTTP 层为 `internal/httpapi/search.go` 与 `ask.go`。design 里原先设想的 `internal/knowledge` 与 `internal/retrieval` 两个包合并为一个，避免为了分层而在纯计算与外部调用之间传递重复结构体。
+3. **依赖故障语义的分工**：`GET /api/search` 按本课规约对 `hybrid` 取严格语义——两条路径都要能执行，任一路径不可用即 503；`POST /api/ask` 按 `knowledge-qa` 基线取降级语义——向量路径在未配置 `EMBEDDING_*` 时自动停用，配置了但故障时若关键字已有候选则继续据此作答，两条路径都无候选才 503。两者共用同一检索实现，只有"路径故障如何处置"不同。
+4. **`/api/ask` 同时返回 `hits` 与 `citations`**：`hits` 是可回溯摘录列表（材料标题、切片序号、字符区间、摘录），`citations` 是同一顺序的紧凑标识 `{material_id,title,chunk_id,chunk_index}`，与回答里的 `[1]`、`[2]` 一一对应。两份规约对字段名的表述不同，这里以并存方式同时满足。
+5. **重建索引入口**：`POST /api/materials/{id}/reindex`（仅教师、仅本班，其他班级与不存在同为 404），参数为 `{strategy,size,overlap,remove_urls,remove_emails,collapse_whitespace}`；执行顺序是"先删该材料的旧向量与旧切片，再按本次策略写入"。历史材料的一次性补齐用 `cmd/reindex`（可带材料 id，省略即全部）。
+6. **集合初始化**：`server` 启动时按配置维度确保集合存在；未配置嵌入网关时是空操作，Qdrant 不可用时只记录日志，进程照常提供关键字检索。就绪探测沿用"`/health` 只表示进程存活"的约定。

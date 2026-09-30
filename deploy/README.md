@@ -9,7 +9,15 @@
 
 使用 Docker Desktop 的 Linux containers 模式及 Docker Compose v2；Windows 示例使用 PowerShell 7.4+，以保证原生程序重定向二进制备份时不改写字节。所有命令从仓库根目录执行。
 
-三个服务为 mysql（MySQL 8.0）、api（Go）、nginx（Vite 静态页面及反向代理）。仅 Nginx 绑定 `127.0.0.1:8080`；可用 CAMPUSCLAW_PORT 改端口。MySQL 与 API 不发布宿主机端口。mysql_data 持久化 MySQL 全部数据（账号、班级、材料与知识库；迁移 000002 后不再有会话表）；material_data 挂载 API 的 /data，含 uploads 和 staging。Nginx 不挂载材料卷。
+四个服务为 mysql（MySQL 8.0）、qdrant（向量库）、api（Go）、nginx（Vite 静态页面及反向代理）。仅 Nginx 绑定 `127.0.0.1:8080`；可用 CAMPUSCLAW_PORT 改端口。MySQL、Qdrant 与 API 都不发布宿主机端口，客户端只能经 Nginx 调用本站接口。mysql_data 持久化 MySQL 全部数据（账号、班级、材料、知识库与切片；迁移 000002 后不再有会话表）；qdrant_data 持久化 `campusclaw_chunks` 集合；material_data 挂载 API 的 /data，含 uploads 和 staging。Nginx 不挂载材料卷。
+
+检索相关环境变量（全部可选，缺失时 api 仍能启动）：`QDRANT_URL`（默认 `http://qdrant:6333`）、`QDRANT_COLLECTION`（默认 `campusclaw_chunks`）、`EMBEDDING_BASE_URL`/`EMBEDDING_API_KEY`/`EMBEDDING_MODEL`/`EMBEDDING_DIM`、`CHAT_BASE_URL`/`CHAT_API_KEY`/`CHAT_MODEL`。密钥只注入 api 容器，不进入前端构建产物。第 3 课入库的历史材料没有切片，需要执行一次显式重建：
+
+```bash
+docker compose run --rm --no-deps --entrypoint /app/reindex api
+```
+
+回滚口径：本变更对第 3 课能力为叠加。停用检索/问答路由与前端入口即可退回原行为；`knowledge_chunks` 与 `qdrant_data` 可直接丢弃，不影响 `materials`、`knowledge_entries` 与账号。接口、字段与降级约定见 [backend/SEARCH.md](../backend/SEARCH.md)。
 
 Nginx 对 SPA 外壳 `/` 与 `/index.html` 返回 `Cache-Control: no-cache`（必须回源校验），对内容哈希命名的 `/assets/` 返回 `public, max-age=31536000, immutable`。这样重建前端后浏览器不会继续使用旧的 index.html 与旧 JS；若症状是"重建后页面行为像旧版本"，先用无痕窗口或硬刷新（Ctrl+Shift+R）排除浏览器缓存。
 

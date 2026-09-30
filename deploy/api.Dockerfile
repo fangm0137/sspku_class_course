@@ -6,7 +6,8 @@ COPY backend/ ./
 RUN CGO_ENABLED=0 go build -trimpath -o /out/server ./cmd/server && \
     CGO_ENABLED=0 go build -trimpath -o /out/migrate ./cmd/migrate && \
     CGO_ENABLED=0 go build -trimpath -o /out/seed ./cmd/seed && \
-    CGO_ENABLED=0 go build -trimpath -o /out/seed-materials ./cmd/seed-materials
+    CGO_ENABLED=0 go build -trimpath -o /out/seed-materials ./cmd/seed-materials && \
+    CGO_ENABLED=0 go build -trimpath -o /out/reindex ./cmd/reindex
 
 FROM alpine:3.22
 RUN addgroup -g 10001 campus && adduser -D -u 10001 -G campus campus && \

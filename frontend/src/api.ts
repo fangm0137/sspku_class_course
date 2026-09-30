@@ -1,12 +1,28 @@
 export type User = { id: number; username: string; role: 'teacher' | 'student'; class_id: number };
 export type Material = { id: number; title: string; class_id: number; created_at: string };
 export type Detail = Material & { text: string };
-// 引用字段与后端 /api/ask 的响应一一对应：citation 就是回答里的 [n] 序号。
+// 引用字段与后端 /api/ask 的响应一一对应：citation 就是回答里的 [n] 序号，
+// 字符区间与 /api/search 用同一套字段名。
 export type AskCitation = {
-  material_id: number; title: string; chunk_index: number;
-  start_offset: number; end_offset: number; excerpt: string; citation: number;
+  material_id: number; title: string; chunk_id: number; chunk_index: number;
+  char_start: number; char_end: number; excerpt: string; citation: number;
 };
 export type AskReply = { answer: string; hits: AskCitation[] };
+
+// 检索：模式与班级都由服务端决定，查询串里不带任何班级参数。
+export type SearchMode = 'keyword' | 'vector' | 'hybrid';
+// 命中字段与后端 /api/search 一一对应；score 只是本次模式的排序分。
+export type SearchHit = {
+  material_id: number; title: string; chunk_id: number; chunk_index: number;
+  char_start: number; char_end: number; excerpt: string; score: number;
+};
+export type SearchReply = { mode: SearchMode; hits: SearchHit[] };
+export type ReindexReply = { material_id: number; strategy: string; chunks: number };
+// 重建索引的参数：strategy 决定切分方式，custom 才需要 size/overlap。
+export type ReindexOptions = {
+  strategy: 'auto' | 'custom' | 'hierarchy'; size?: number; overlap?: number;
+  remove_urls?: boolean; remove_emails?: boolean; collapse_whitespace?: boolean;
+};
 
 const messages: Record<string, string> = {
   invalid_credentials: '账号或密码错误，请重新输入。',
@@ -80,6 +96,16 @@ export async function write<T>(path: string, body?: FormData | Record<string, un
 // 提问：检索与生成都在服务端完成，浏览器只拿到回答与可回溯的引用。
 export async function ask(question: string): Promise<AskReply> {
   return write<AskReply>('/api/ask', { question });
+}
+
+// 检索：三种模式都由服务端执行，空查询与非法模式会被后端拒绝为 400。
+export async function search(question: string, mode: SearchMode): Promise<SearchReply> {
+  return read<SearchReply>(`/api/search?q=${encodeURIComponent(question)}&mode=${mode}`);
+}
+
+// 重建索引：只有教师可用，按本次策略重新切片并重新嵌入。
+export async function reindex(materialID: number, options: ReindexOptions): Promise<ReindexReply> {
+  return write<ReindexReply>(`/api/materials/${materialID}/reindex`, options);
 }
 
 // Sign in returns a freshly signed token, which becomes the stored credential.

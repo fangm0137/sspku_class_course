@@ -88,8 +88,8 @@ func (q *Qdrant) Upsert(ctx context.Context, points []vectorPoint) error {
 // 与 MySQL 侧的条件互为双保险。
 func (q *Qdrant) Search(ctx context.Context, vector []float32, classID uint64, limit int) ([]scoredPoint, error) {
 	body, err := json.Marshal(map[string]any{
-		"query":       vector,
-		"limit":       limit,
+		"query":        vector,
+		"limit":        limit,
 		"with_payload": false,
 		"filter": map[string]any{
 			"must": []map[string]any{{"key": "class_id", "match": map[string]any{"value": classID}}},
@@ -125,6 +125,27 @@ func (q *Qdrant) Search(ctx context.Context, vector []float32, classID uint64, l
 		points = append(points, scoredPoint{ID: uint64(id), Score: item.Score})
 	}
 	return points, nil
+}
+
+// DeleteByMaterial 删除某份材料的全部向量，用于显式重建索引前的清理。
+// 用 payload 过滤器而不是点 id 列表，避免重建时漏删不再存在的旧切片。
+func (q *Qdrant) DeleteByMaterial(ctx context.Context, materialID uint64) error {
+	body, err := json.Marshal(map[string]any{
+		"filter": map[string]any{
+			"must": []map[string]any{{"key": "material_id", "match": map[string]any{"value": materialID}}},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("%w: encode delete", ErrDependency)
+	}
+	status, _, err := q.do(ctx, http.MethodPost, "/collections/"+q.collection+"/points/delete?wait=true", body)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status > 299 {
+		return fmt.Errorf("%w: delete status %d", ErrDependency, status)
+	}
+	return nil
 }
 
 func (q *Qdrant) do(ctx context.Context, method, path string, body []byte) (int, []byte, error) {

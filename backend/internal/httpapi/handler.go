@@ -31,8 +31,12 @@ func newHandler(db *sql.DB, secret string, store *uploadStore, ragServices ...*r
 	security := NewSecurity(db, secret)
 	materials := materialReader{db: db, directory: store.directory}
 	ask := askHandler{service: ragService}
+	search := searchHandler{service: ragService}
+	reindex := reindexHandler{service: ragService}
 	mux.Handle("POST /api/ask", security.RequireIdentity(http.HandlerFunc(ask.ask), false))
+	mux.Handle("GET /api/search", security.RequireIdentity(http.HandlerFunc(search.search), false))
 	mux.Handle("POST /api/materials", security.RequireIdentity(http.HandlerFunc(store.upload), true))
+	mux.Handle("POST /api/materials/{id}/reindex", security.RequireIdentity(http.HandlerFunc(reindex.reindex), true))
 	mux.Handle("GET /api/materials", security.RequireIdentity(http.HandlerFunc(materials.list), false))
 	mux.Handle("GET /api/materials/{id}", security.RequireIdentity(http.HandlerFunc(materials.detail), false))
 	mux.Handle("GET /api/materials/{id}/file", security.RequireIdentity(http.HandlerFunc(materials.file), false))
