@@ -1,14 +1,12 @@
 package httpapi
 
 import (
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -64,33 +62,9 @@ func TestMySQL8Login(t *testing.T) {
 		f := &fixtures[i]
 		f.id, _ = exec(t, "INSERT INTO users (username,password_hash,role,class_id) VALUES (?,?,?,?)", f.name, fixturePasswordHash(t, f.password), f.role, f.classID).LastInsertId()
 	}
-	bootstrap := func(t *testing.T, cookie *http.Cookie) (*http.Cookie, string) {
-		t.Helper()
-		r := httptest.NewRequest("GET", "http://localhost:8080/api/csrf", nil)
-		if cookie != nil {
-			r.AddCookie(cookie)
-		}
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, r)
-		if w.Code != 200 {
-			t.Fatal("CSRF prerequisite failed")
-		}
-		if len(w.Result().Cookies()) > 0 {
-			cookie = w.Result().Cookies()[0]
-		}
-		var obj map[string]string
-		if json.Unmarshal(w.Body.Bytes(), &obj) != nil {
-			t.Fatal("CSRF response invalid")
-		}
-		return cookie, obj["csrf_token"]
-	}
-	post := func(cookie *http.Cookie, token, body, contentType string) *httptest.ResponseRecorder {
+	// Login accepts a plain JSON envelope: there is no cookie bound CSRF token.
+	post := func(body, contentType string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("POST", "http://localhost:8080/api/login", strings.NewReader(body))
-		if cookie != nil {
-			r.AddCookie(cookie)
-		}
-		r.Header.Set("Origin", "http://localhost:8080")
-		r.Header.Set("X-CSRF-Token", token)
 		r.Header.Set("Content-Type", contentType)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
@@ -98,196 +72,136 @@ func TestMySQL8Login(t *testing.T) {
 	}
 	checkError := func(t *testing.T, w *httptest.ResponseRecorder, status int) {
 		t.Helper()
-		if w.Code != status {
-			t.Fatalf("got status %d want %d", w.Code, status)
-		}
 		var obj map[string]string
-		codes := map[int]string{400: "invalid_request", 401: "invalid_credentials", 403: "csrf_invalid", 503: "service_unavailable"}
-		messages := map[int]string{400: "请求无效", 401: "账号或密码错误", 403: "请求校验失败", 503: "服务暂不可用"}
-		if json.Unmarshal(w.Body.Bytes(), &obj) != nil || len(obj) != 2 || obj["error"] != codes[status] || obj["message"] != messages[status] || len(w.Result().Cookies()) != 0 || w.Header().Get("Cache-Control") != "no-store" {
+		codes := map[int]string{400: "invalid_request", 401: "invalid_credentials", 503: "service_unavailable"}
+		messages := map[int]string{400: "请求无效", 401: "账号或密码错误", 503: "服务暂不可用"}
+		if w.Code != status || json.Unmarshal(w.Body.Bytes(), &obj) != nil || len(obj) != 2 || obj["error"] != codes[status] || obj["message"] != messages[status] || len(w.Result().Cookies()) != 0 || w.Header().Get("Cache-Control") != "no-store" {
 			t.Fatal("unsafe failure response")
 		}
 	}
-	countLogged := func(t *testing.T) int {
+	type issued struct {
+		User      userIdentity
+		Token     string
+		ExpiresAt time.Time
+	}
+	// decodeLogin asserts the response is exactly user + token + expires_at and
+	// that no session cookie is handed out.
+	decodeLogin := func(t *testing.T, w *httptest.ResponseRecorder) issued {
 		t.Helper()
-		var n int
-		if pool.QueryRow("SELECT COUNT(*) FROM sessions WHERE user_id IS NOT NULL").Scan(&n) != nil {
-			t.Fatal("count failed")
+		if w.Code != 200 {
+			t.Fatalf("login failed: %d", w.Code)
 		}
-		return n
+		if len(w.Result().Cookies()) != 0 {
+			t.Fatal("login must not set a session cookie")
+		}
+		var root map[string]json.RawMessage
+		if json.Unmarshal(w.Body.Bytes(), &root) != nil || len(root) != 3 {
+			t.Fatal("wrong login response shape")
+		}
+		var out issued
+		if json.Unmarshal(root["user"], &out.User) != nil || json.Unmarshal(root["token"], &out.Token) != nil {
+			t.Fatal("login response fields invalid")
+		}
+		var stamp string
+		if json.Unmarshal(root["expires_at"], &stamp) != nil {
+			t.Fatal("expires_at missing")
+		}
+		parsed, err := time.Parse(time.RFC3339, stamp)
+		if err != nil || out.Token == "" || len(strings.Split(out.Token, ".")) != 3 {
+			t.Fatal("token is not a compact JWS with an expiry")
+		}
+		out.ExpiresAt = parsed
+		return out
 	}
 	for _, f := range fixtures {
 		t.Run("success-"+f.role+"-"+string(rune('0'+f.id)), func(t *testing.T) {
-			old, token := bootstrap(t, nil)
 			before := time.Now().UTC()
-			w := post(old, token, loginJSON(f.name, f.password), "application/json")
-			if w.Code != 200 {
-				t.Fatalf("login failed: %d", w.Code)
-			}
-			var root map[string]json.RawMessage
-			var user map[string]json.RawMessage
-			if json.Unmarshal(w.Body.Bytes(), &root) != nil || len(root) != 1 || json.Unmarshal(root["user"], &user) != nil || len(user) != 4 {
-				t.Fatal("wrong user response shape")
-			}
-			var got userIdentity
-			json.Unmarshal(root["user"], &got)
-			if got.ID != uint64(f.id) || got.Username != f.name || got.Role != f.role || got.ClassID != uint64(f.classID) {
+			result := decodeLogin(t, post(loginJSON(f.name, f.password), "application/json"))
+			if result.User.ID != uint64(f.id) || result.User.Username != f.name || result.User.Role != f.role || result.User.ClassID != uint64(f.classID) {
 				t.Fatal("identity mismatch")
 			}
-			cookies := w.Result().Cookies()
-			if len(cookies) != 1 {
-				t.Fatal("missing session cookie")
+			claims, ok := security.verifyToken(result.Token, before)
+			if !ok || claims.Subject != uint64(f.id) || claims.ClassID != uint64(f.classID) || claims.Role != f.role {
+				t.Fatal("issued token is not verifiable")
 			}
-			current := cookies[0]
-			if current.Value == old.Value || current.MaxAge != 28800 || !current.HttpOnly || current.SameSite != http.SameSiteLaxMode || current.Path != "/" || current.Secure {
-				t.Fatal("cookie contract failed")
+			if lifetime := result.ExpiresAt.Sub(before); lifetime < 8*time.Hour-time.Minute || lifetime > 8*time.Hour+time.Minute {
+				t.Fatal("token lifetime is not 8 hours")
 			}
-			raw, ok := decodeValue(current.Value)
-			if !ok {
-				t.Fatal("cookie is not opaque 32-byte ID")
-			}
-			var created, expires time.Time
-			var csrf []byte
-			var uid uint64
-			if pool.QueryRow("SELECT user_id,created_at,expires_at,csrf_token_hash FROM sessions WHERE session_id_hash=?", security.digest(raw)).Scan(&uid, &created, &expires, &csrf) != nil || uid != uint64(f.id) || expires.Sub(created) != 8*time.Hour || created.Before(before.Add(-time.Second)) || csrf != nil {
-				t.Fatal("stored session invalid")
-			}
-			oldRaw, _ := decodeValue(old.Value)
 			var n int
-			pool.QueryRow("SELECT COUNT(*) FROM sessions WHERE session_id_hash=?", security.digest(oldRaw)).Scan(&n)
-			if n != 0 {
-				t.Fatal("old session retained")
+			if pool.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=? AND table_name='sessions'", cfg.Name).Scan(&n) != nil || n != 0 {
+				t.Fatal("stateless login must not keep a session table")
 			}
-			checkError(t, post(old, token, loginJSON(f.name, f.password), "application/json"), 403)
-			checkError(t, post(current, token, loginJSON(f.name, f.password), "application/json"), 403)
-			// Existing logged-in session also rotates, after obtaining its new CSRF token.
-			current, newToken := bootstrap(t, current)
-			second := post(current, newToken, loginJSON(f.name, f.password), "application/json")
-			if second.Code != 200 || second.Result().Cookies()[0].Value == current.Value {
-				t.Fatal("logged-in replacement failed")
-			}
-			checkError(t, post(current, newToken, loginJSON(f.name, f.password), "application/json"), 403)
 		})
 	}
-	t.Run("malformed-input-and-priority", func(t *testing.T) {
-		cookie, token := bootstrap(t, nil)
-		before := countLogged(t)
+	t.Run("malformed-input", func(t *testing.T) {
 		for name, body := range malformedLogins() {
-			t.Run(name, func(t *testing.T) { checkError(t, post(cookie, token, body, "application/json"), 400) })
+			t.Run(name, func(t *testing.T) { checkError(t, post(body, "application/json"), 400) })
 		}
-		checkError(t, post(cookie, token, loginJSON("x", "x"), "text/plain"), 400)
-		checkError(t, post(cookie, "wrong", "{", "application/json"), 403)
-		if countLogged(t) != before {
-			t.Fatal("invalid inputs created sessions")
-		}
+		checkError(t, post(loginJSON("x", "x"), "text/plain"), 400)
 	})
 	t.Run("credentials-and-untrusted-fields", func(t *testing.T) {
-		cookie, token := bootstrap(t, nil)
-		before := countLogged(t)
-		a := post(cookie, token, loginJSON("missing-account", randomPassword), "application/json")
-		b := post(cookie, token, loginJSON(fixtures[0].name, randomPassword+"wrong"), "application/json")
+		a := post(loginJSON("missing-account", randomPassword), "application/json")
+		b := post(loginJSON(fixtures[0].name, randomPassword+"wrong"), "application/json")
 		checkError(t, a, 401)
 		checkError(t, b, 401)
 		if a.Body.String() != b.Body.String() {
 			t.Fatal("account existence leaked")
 		}
-		checkError(t, post(cookie, token, loginJSON(fixtures[2].name, strings.TrimSpace(fixtures[2].password)), "application/json"), 401)
-		if countLogged(t) != before {
-			t.Fatal("bad credentials created sessions")
-		}
+		checkError(t, post(loginJSON(fixtures[2].name, strings.TrimSpace(fixtures[2].password)), "application/json"), 401)
 		body, _ := json.Marshal(map[string]any{"username": fixtures[1].name, "password": fixtures[1].password, "role": "teacher", "class_id": classB})
-		w := post(cookie, token, string(body), "application/json")
-		var response struct {
-			User userIdentity `json:"user"`
-		}
-		json.Unmarshal(w.Body.Bytes(), &response)
-		if w.Code != 200 || response.User.Role != "student" || response.User.ClassID != uint64(classA) {
+		result := decodeLogin(t, post(string(body), "application/json"))
+		if result.User.Role != "student" || result.User.ClassID != uint64(classA) {
 			t.Fatal("client controlled identity")
 		}
 	})
-	t.Run("concurrent-session-replacement", func(t *testing.T) {
-		cookie, token := bootstrap(t, nil)
-		before := countLogged(t)
-		var wg sync.WaitGroup
-		results := make(chan int, 2)
-		for i := 0; i < 2; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				results <- post(cookie, token, loginJSON(fixtures[1].name, fixtures[1].password), "application/json").Code
-			}()
+	t.Run("token-expiry-tampering-and-no-replay-state", func(t *testing.T) {
+		result := decodeLogin(t, post(loginJSON(fixtures[1].name, fixtures[1].password), "application/json"))
+		gate := security.RequireIdentity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }), false)
+		call := func(token string) int {
+			r := httptest.NewRequest("GET", "http://localhost:8080/test-only", nil)
+			if token != "" {
+				r.Header.Set("Authorization", "Bearer "+token)
+			}
+			out := httptest.NewRecorder()
+			gate.ServeHTTP(out, r)
+			return out.Code
 		}
-		wg.Wait()
-		close(results)
-		counts := map[int]int{}
-		for code := range results {
-			counts[code]++
-		}
-		if counts[200] != 1 || counts[403] != 1 || countLogged(t) != before+1 {
-			t.Fatal("old session consumed more than once")
-		}
-	})
-	t.Run("session-expiry-eight-hours", func(t *testing.T) {
-		cookie, token := bootstrap(t, nil)
-		w := post(cookie, token, loginJSON(fixtures[1].name, fixtures[1].password), "application/json")
-		if w.Code != 200 {
-			t.Fatal("login failed")
-		}
-		cookie = w.Result().Cookies()[0]
-		raw, _ := decodeValue(cookie.Value)
-		var expires time.Time
-		if pool.QueryRow("SELECT expires_at FROM sessions WHERE session_id_hash=?", security.digest(raw)).Scan(&expires) != nil {
-			t.Fatal("session query failed")
-		}
-		// Force a freshly issued token up to the session deadline to isolate identity expiry.
-		tokenRaw, encoded := randomValue()
-		digest := sha256.Sum256(tokenRaw)
-		exec(t, "UPDATE sessions SET csrf_token_hash=?,csrf_expires_at=expires_at WHERE session_id_hash=?", digest[:], security.digest(raw))
-		gate := security.ProtectWrite(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }), true)
 		for _, tc := range []struct {
 			now    time.Time
 			status int
-		}{{expires.Add(-time.Microsecond), 204}, {expires, 401}} {
+		}{{result.ExpiresAt.Add(-time.Second), 204}, {result.ExpiresAt, 401}, {result.ExpiresAt.Add(time.Hour), 401}} {
 			security.now = func() time.Time { return tc.now }
-			r := httptest.NewRequest("POST", "http://localhost:8080/test-only", nil)
-			r.AddCookie(cookie)
-			r.Header.Set("Origin", "http://localhost:8080")
-			r.Header.Set("X-CSRF-Token", encoded)
-			out := httptest.NewRecorder()
-			gate.ServeHTTP(out, r)
-			if out.Code != tc.status {
-				t.Fatal("8-hour boundary incorrect")
+			if got := call(result.Token); got != tc.status {
+				t.Fatalf("8-hour boundary incorrect: got %d want %d", got, tc.status)
 			}
 		}
 		security.now = time.Now
+		segments := strings.Split(result.Token, ".")
+		forged := segments[0] + "." + encodeSegment([]byte(`{"sub":1,"role":"teacher","classId":999,"exp":4102444800}`)) + "." + segments[2]
+		unsigned := encodeSegment([]byte(`{"alg":"none","typ":"JWT"}`)) + "." + segments[1] + "."
+		for _, bad := range []string{forged, unsigned, segments[0] + "." + segments[1] + ".AAAA", "not-a-token", ""} {
+			if got := call(bad); got != 401 {
+				t.Fatalf("forged or missing token accepted: %d", got)
+			}
+		}
+		// Logout needs no server side deletion: the token stays valid until it expires.
+		second := decodeLogin(t, post(loginJSON(fixtures[1].name, fixtures[1].password), "application/json"))
+		if second.Token == result.Token {
+			t.Fatal("a second login must still issue its own token")
+		}
+		if call(result.Token) != 204 {
+			t.Fatal("bearer tokens are stateless; the first token must stay usable")
+		}
 	})
-	t.Run("database-failures-and-rollback", func(t *testing.T) {
-		cookie, token := bootstrap(t, nil)
-		before := countLogged(t)
+	t.Run("database-failures", func(t *testing.T) {
 		body := loginJSON(fixtures[1].name, fixtures[1].password)
-		exec(t, "CREATE TRIGGER login_reject_insert BEFORE INSERT ON sessions FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='test failure'")
-		checkError(t, post(cookie, token, body, "application/json"), 503)
-		exec(t, "DROP TRIGGER login_reject_insert")
-		if countLogged(t) != before {
-			t.Fatal("failed insert partially committed")
-		}
-		raw, _ := decodeValue(cookie.Value)
-		var n int
-		pool.QueryRow("SELECT COUNT(*) FROM sessions WHERE session_id_hash=?", security.digest(raw)).Scan(&n)
-		if n != 1 {
-			t.Fatal("rollback lost old session")
-		}
-		exec(t, "CREATE TRIGGER login_reject_delete BEFORE DELETE ON sessions FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='test failure'")
-		checkError(t, post(cookie, token, body, "application/json"), 503)
-		exec(t, "DROP TRIGGER login_reject_delete")
-		// Break user lookup without breaking the CSRF table to test login query errors.
 		exec(t, "RENAME TABLE users TO users_test_unavailable")
-		checkError(t, post(cookie, token, body, "application/json"), 503)
+		checkError(t, post(body, "application/json"), 503)
 		exec(t, "RENAME TABLE users_test_unavailable TO users")
-		if post(cookie, token, body, "application/json").Code != 200 {
-			t.Fatal("failed login did not preserve reusable old session")
+		if post(body, "application/json").Code != 200 {
+			t.Fatal("login did not recover after the table returned")
 		}
 		pool.Close()
-		checkError(t, post(cookie, token, body, "application/json"), 503)
+		checkError(t, post(body, "application/json"), 503)
 	})
 }

@@ -59,7 +59,7 @@ if ($LASTEXITCODE -ne 0) { throw '材料初始化失败' }
 | go run ./cmd/seed | DB_*、三个 SEED_*_PASSWORD | accounts initialized | no change |
 | go run ./cmd/seed-materials | DB_*、绝对 UPLOAD_DIR | material seed initialized | no change |
 
-以上三条命令都不需要 SESSION_SECRET，不会启动 HTTP 服务。首次对空库执行完成后，应有 2 个班级、3 个账号、1 条 B 班材料和其唯一知识库记录；原文件在 UPLOAD_DIR/seed-class-b-v1.txt。初始化不创建登录会话，也不创建 A 班材料。既有数据库可能有其他数据，不能把这些数量当作清空数据库的理由。
+以上三条命令都不需要 TOKEN_SECRET，不会启动 HTTP 服务。首次对空库执行完成后，应有 2 个班级、3 个账号、1 条 B 班材料和其唯一知识库记录；原文件在 UPLOAD_DIR/seed-class-b-v1.txt。初始化不创建登录会话，也不创建 A 班材料。既有数据库可能有其他数据，不能把这些数量当作清空数据库的理由。
 
 验证重复执行时保留相同数据库和 UPLOAD_DIR，按相同顺序串行重跑。账号密码必须仍全部提供；即使提供新密码，也不会重置已有密码。班级/角色冲突、B 班不唯一、材料或原文件不一致时报错，不覆盖已有数据。失败或中断后的遗留文件需要人工核实；不提供并发初始化、种子中断补偿或自动修复。请勿通过删库或删文件强行取得成功输出。
 
@@ -75,7 +75,7 @@ foreach ($variableName in @(
 }
 ```
 
-启动服务还需由环境提供 SESSION_SECRET，再执行 `go run ./cmd/server`；密钥由外部安全生成并保存，不能每次重启随意更换。认证调用顺序见 [AUTH.md](AUTH.md)：csrf → login → 新 csrf → me → logout。初始化成功不代表 HTTP 服务正在运行，health 成功也不代表材料业务就绪。
+启动服务还需由环境提供 TOKEN_SECRET，再执行 `go run ./cmd/server`；密钥由外部安全生成并保存，不能每次重启随意更换（更换会使全部未过期 token 立即失效）。认证调用顺序见 [AUTH.md](AUTH.md)：login 取 token → 带 `Authorization: Bearer` 请求 me / materials → logout 后由客户端丢弃 token。初始化成功不代表 HTTP 服务正在运行，health 成功也不代表材料业务就绪。
 
 ## 三份样本与 seed/upload 区别
 

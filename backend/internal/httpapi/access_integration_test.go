@@ -96,38 +96,36 @@ func TestMySQL8Access(t *testing.T) {
 	keys[bid] = seed.MaterialKey
 	handler := NewHandler(pool, secret, directory)
 	security := NewSecurity(pool, secret)
-	request := func(target string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	// Every protected call carries the bearer token instead of a session cookie.
+	request := func(target, token string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "http://localhost"+target, nil)
-		if cookie != nil {
-			r.AddCookie(cookie)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
 		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	login := func(username string) *http.Cookie {
+	login := func(username string) string {
 		t.Helper()
-		w := request("/api/csrf", nil)
-		if w.Code != 200 {
-			t.Fatal("csrf failed")
-		}
-		var token map[string]string
-		json.Unmarshal(w.Body.Bytes(), &token)
 		r := httptest.NewRequest("POST", "http://localhost/api/login", strings.NewReader(loginJSON(username, password)))
-		r.AddCookie(w.Result().Cookies()[0])
-		r.Header.Set("Origin", "http://localhost")
-		r.Header.Set("X-CSRF-Token", token["csrf_token"])
 		r.Header.Set("Content-Type", "application/json")
-		w = httptest.NewRecorder()
+		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		if w.Code != 200 {
 			t.Fatal("login failed")
 		}
-		return w.Result().Cookies()[0]
+		var body struct {
+			Token string `json:"token"`
+		}
+		if json.Unmarshal(w.Body.Bytes(), &body) != nil || body.Token == "" || len(w.Result().Cookies()) != 0 {
+			t.Fatal("login must return a token and no session cookie")
+		}
+		return body.Token
 	}
-	cookies := map[string]*http.Cookie{}
+	tokens := map[string]string{}
 	for _, name := range []string{"teacher_a", "student_a1", "student_b1"} {
-		cookies[name] = login(name)
+		tokens[name] = login(name)
 	}
 	checkError := func(t *testing.T, w *httptest.ResponseRecorder, status int, code, message string) {
 		t.Helper()
@@ -136,13 +134,13 @@ func TestMySQL8Access(t *testing.T) {
 			t.Fatalf("response contract failed, status=%d expected=%d", w.Code, status)
 		}
 	}
-	gateRequest := func(cookie *http.Cookie, role string) *httptest.ResponseRecorder {
+	gateRequest := func(token, role string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("POST", "http://localhost/test-upload?role="+role+"&class_id=999", nil)
 		r.Body = forbiddenBody{t}
 		r.Header.Set("X-Role", role)
 		r.Header.Set("X-Class-ID", "999")
-		if cookie != nil {
-			r.AddCookie(cookie)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
 		}
 		w := httptest.NewRecorder()
 		security.RequireIdentity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { jsonReply(w, 200, r.Context().Value(identityKey{})) }), true).ServeHTTP(w, r)
@@ -150,17 +148,17 @@ func TestMySQL8Access(t *testing.T) {
 	}
 	t.Run("T4.1-trusted-identity-role-and-no-side-effects", func(t *testing.T) {
 		for _, name := range []string{"student_a1", "student_b1"} {
-			checkError(t, gateRequest(cookies[name], "teacher"), 403, "forbidden", "无权执行此操作")
+			checkError(t, gateRequest(tokens[name], "teacher"), 403, "forbidden", "无权执行此操作")
 		}
-		checkError(t, gateRequest(nil, "teacher"), 401, "unauthenticated", "请先登录")
-		w := gateRequest(cookies["teacher_a"], "student")
+		checkError(t, gateRequest("", "teacher"), 401, "unauthenticated", "请先登录")
+		w := gateRequest(tokens["teacher_a"], "student")
 		var got userIdentity
 		json.Unmarshal(w.Body.Bytes(), &got)
 		if w.Code != 200 || got.ID != teacher || got.ClassID != a || got.Role != "teacher" {
 			t.Fatal("untrusted request changed identity")
 		}
 		exec(t, "UPDATE users SET role='student' WHERE id=?", teacher)
-		checkError(t, gateRequest(cookies["teacher_a"], "teacher"), 403, "forbidden", "无权执行此操作")
+		checkError(t, gateRequest(tokens["teacher_a"], "teacher"), 403, "forbidden", "无权执行此操作")
 		exec(t, "UPDATE users SET role='teacher' WHERE id=?", teacher)
 		var count int
 		pool.QueryRow("SELECT COUNT(*) FROM materials").Scan(&count)
@@ -174,14 +172,14 @@ func TestMySQL8Access(t *testing.T) {
 		}
 	})
 	t.Run("T4.2-list-detail-file-and-response-fields", func(t *testing.T) {
-		for name, cookie := range cookies {
+		for name, token := range tokens {
 			own := a
 			expected := 2
 			if name == "student_b1" {
 				own = b
 				expected = 1
 			}
-			w := request("/api/materials?class_id=999&role=teacher", cookie)
+			w := request("/api/materials?class_id=999&role=teacher", token)
 			var root map[string]json.RawMessage
 			var items []map[string]json.RawMessage
 			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &root) != nil || len(root) != 1 || json.Unmarshal(root["items"], &items) != nil || len(items) != expected {
@@ -204,7 +202,7 @@ func TestMySQL8Access(t *testing.T) {
 					continue
 				}
 				target := fmt.Sprintf("/api/materials/%d", id)
-				w = request(target, cookie)
+				w = request(target, token)
 				var detail map[string]json.RawMessage
 				var text string
 				if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &detail) != nil || len(detail) != 5 {
@@ -214,7 +212,7 @@ func TestMySQL8Access(t *testing.T) {
 				if text != string(content) {
 					t.Fatal("detail text mismatch")
 				}
-				w = request(target+"/file", cookie)
+				w = request(target+"/file", token)
 				kind, params, err := mime.ParseMediaType(w.Header().Get("Content-Disposition"))
 				if w.Code != 200 || w.Body.String() != string(content) || w.Header().Get("Content-Type") != "application/octet-stream" || w.Header().Get("Cache-Control") != "no-store" || err != nil || kind != "attachment" || params["filename"] == "" {
 					t.Fatal("download contract failed")
@@ -223,14 +221,14 @@ func TestMySQL8Access(t *testing.T) {
 		}
 		empty, _ := exec(t, "INSERT INTO classes (name) VALUES (?)", "empty-test").LastInsertId()
 		exec(t, "UPDATE users SET class_id=? WHERE username='student_b1'", empty)
-		w := request("/api/materials", cookies["student_b1"])
+		w := request("/api/materials", tokens["student_b1"])
 		if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"items":[]}` {
 			t.Fatal("empty items not array")
 		}
 		exec(t, "UPDATE users SET class_id=? WHERE username='student_b1'", b)
 	})
 	t.Run("T4.3-bidirectional-IDs-anonymous-and-bypass", func(t *testing.T) {
-		for name, cookie := range cookies {
+		for name, token := range tokens {
 			own := a
 			if name == "student_b1" {
 				own = b
@@ -238,10 +236,10 @@ func TestMySQL8Access(t *testing.T) {
 			for id := range contents {
 				for _, suffix := range []string{"", "/file"} {
 					target := fmt.Sprintf("/api/materials/%d%s?class_id=%d&role=teacher", id, suffix, classes[id])
-					checkError(t, request(target, nil), 401, "unauthenticated", "请先登录")
+					checkError(t, request(target, ""), 401, "unauthenticated", "请先登录")
 					if classes[id] != own {
-						cross := request(target, cookie)
-						missing := request("/api/materials/99999999"+suffix, cookie)
+						cross := request(target, token)
+						missing := request("/api/materials/99999999"+suffix, token)
 						checkError(t, cross, 404, "not_found", "资源不存在")
 						if cross.Body.String() != missing.Body.String() || missing.Code != 404 {
 							t.Fatal("cross-class existence disclosed")
@@ -250,33 +248,33 @@ func TestMySQL8Access(t *testing.T) {
 				}
 			}
 			for _, id := range []string{"abc", "0", "01", "-1", "18446744073709551616", "%2e%2e%2fsecret"} {
-				checkError(t, request("/api/materials/"+id, cookie), 404, "not_found", "资源不存在")
-				checkError(t, request("/api/materials/"+id, nil), 401, "unauthenticated", "请先登录")
+				checkError(t, request("/api/materials/"+id, token), 404, "not_found", "资源不存在")
+				checkError(t, request("/api/materials/"+id, ""), 401, "unauthenticated", "请先登录")
 			}
 		}
-		checkError(t, request("/api/materials", nil), 401, "unauthenticated", "请先登录")
+		checkError(t, request("/api/materials", ""), 401, "unauthenticated", "请先登录")
 		for _, target := range []string{"/uploads/" + seed.MaterialKey, "/data/uploads/" + seed.MaterialKey, "/static/" + seed.MaterialKey, "/api/knowledge_entries/1", "/knowledge/1", "/fixtures/class-b-seed.txt"} {
-			for _, cookie := range []*http.Cookie{nil, cookies["teacher_a"], cookies["student_b1"]} {
-				checkError(t, request(target, cookie), 404, "not_found", "资源不存在")
+			for _, token := range []string{"", tokens["teacher_a"], tokens["student_b1"]} {
+				checkError(t, request(target, token), 404, "not_found", "资源不存在")
 			}
 		}
-		for _, cookie := range []*http.Cookie{{Name: sessionCookie, Value: "invalid"}, func() *http.Cookie { _, id := randomValue(); return &http.Cookie{Name: sessionCookie, Value: id} }()} {
-			checkError(t, request("/api/materials", cookie), 401, "unauthenticated", "请先登录")
+		for _, token := range []string{"invalid", "a.b.c", "eyJhbGciOiJub25lIn0.e30.", "Bearer nested"} {
+			checkError(t, request("/api/materials", token), 401, "unauthenticated", "请先登录")
 		}
 	})
 	t.Run("T4.2-missing-content-and-storage-containment", func(t *testing.T) {
-		cookie := cookies["student_b1"]
+		token := tokens["student_b1"]
 		target := fmt.Sprintf("/api/materials/%d", bid)
 		exec(t, "DELETE FROM knowledge_entries WHERE material_id=?", bid)
-		checkError(t, request(target, cookie), 500, "internal_error", "服务内部错误")
+		checkError(t, request(target, token), 500, "internal_error", "服务内部错误")
 		exec(t, "INSERT INTO knowledge_entries (material_id,class_id,extracted_text) VALUES (?,?,?)", bid, b, string(contents[bid]))
 		if os.Remove(filepath.Join(directory, keys[bid])) != nil {
 			t.Fatal("fault setup failed")
 		}
-		checkError(t, request(target+"/file", cookie), 500, "internal_error", "服务内部错误")
-		checkError(t, request(target+"/file", cookies["teacher_a"]), 404, "not_found", "资源不存在")
+		checkError(t, request(target+"/file", token), 500, "internal_error", "服务内部错误")
+		checkError(t, request(target+"/file", tokens["teacher_a"]), 404, "not_found", "资源不存在")
 		exec(t, "UPDATE materials SET storage_key=? WHERE id=?", "../private.txt", bid)
-		checkError(t, request(target+"/file", cookie), 500, "internal_error", "服务内部错误")
+		checkError(t, request(target+"/file", token), 500, "internal_error", "服务内部错误")
 		exec(t, "UPDATE materials SET storage_key=? WHERE id=?", keys[bid], bid)
 		if os.WriteFile(filepath.Join(directory, keys[bid]), contents[bid], 0600) != nil {
 			t.Fatal("fixture restore failed")
@@ -285,15 +283,15 @@ func TestMySQL8Access(t *testing.T) {
 	t.Run("T4.1-T4.2-database-failure-is-503", func(t *testing.T) {
 		exec(t, "RENAME TABLE materials TO materials_unavailable")
 		for _, target := range []string{"/api/materials", fmt.Sprintf("/api/materials/%d", bid), fmt.Sprintf("/api/materials/%d/file", bid)} {
-			checkError(t, request(target, cookies["student_b1"]), 503, "service_unavailable", "服务暂不可用")
+			checkError(t, request(target, tokens["student_b1"]), 503, "service_unavailable", "服务暂不可用")
 		}
 		exec(t, "RENAME TABLE materials_unavailable TO materials")
 		pool.Close()
-		checkError(t, gateRequest(cookies["teacher_a"], "teacher"), 503, "service_unavailable", "服务暂不可用")
+		checkError(t, gateRequest(tokens["teacher_a"], "teacher"), 503, "service_unavailable", "服务暂不可用")
 		for _, target := range []string{"/api/materials", fmt.Sprintf("/api/materials/%d", bid), fmt.Sprintf("/api/materials/%d/file", bid)} {
-			checkError(t, request(target, cookies["student_b1"]), 503, "service_unavailable", "服务暂不可用")
+			checkError(t, request(target, tokens["student_b1"]), 503, "service_unavailable", "服务暂不可用")
 		}
-		if request("/health", nil).Code != 200 {
+		if request("/health", "").Code != 200 {
 			t.Fatal("health depends on DB")
 		}
 	})

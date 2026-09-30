@@ -4,12 +4,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$variables = @('SESSION_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','DB_USER','DB_NAME','CAMPUSCLAW_PORT','DOCKER_CONFIG')
+$variables = @('TOKEN_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','DB_USER','DB_NAME','CAMPUSCLAW_PORT','DOCKER_CONFIG')
 $saved = @{}
 $emptyEnvironment = New-TemporaryFile
 try {
     foreach ($name in $variables) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
-    foreach ($name in @('SESSION_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD')) { [Environment]::SetEnvironmentVariable($name, [guid]::NewGuid().ToString('N'), 'Process') }
+    foreach ($name in @('TOKEN_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD')) { [Environment]::SetEnvironmentVariable($name, [guid]::NewGuid().ToString('N'), 'Process') }
     $env:DB_USER = 'campusclaw'; $env:DB_NAME = 'campusclaw'; $env:CAMPUSCLAW_PORT = '8080'
     if ($DockerConfigDirectory) { $env:DOCKER_CONFIG = $DockerConfigDirectory }
     # Parse in memory. Never print rendered configuration: it contains credentials.

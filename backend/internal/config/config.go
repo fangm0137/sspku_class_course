@@ -10,10 +10,10 @@ import (
 
 // Config is loaded once at startup. Do not log it: it contains credentials.
 type Config struct {
-	HTTPAddr      string
-	UploadDir     string
-	SessionSecret string
-	Database      Database
+	HTTPAddr    string
+	UploadDir   string
+	TokenSecret string
+	Database    Database
 }
 
 type Database struct {
@@ -27,8 +27,8 @@ type Database struct {
 // Load accepts a lookup function so tests do not need real credentials.
 // Errors identify configuration keys only, never their values.
 func Load(getenv func(string) string) (Config, error) {
-	if strings.TrimSpace(getenv("SESSION_SECRET")) == "" {
-		return Config{}, fmt.Errorf("required configuration missing: SESSION_SECRET")
+	if strings.TrimSpace(getenv("TOKEN_SECRET")) == "" {
+		return Config{}, fmt.Errorf("required configuration missing: TOKEN_SECRET")
 	}
 	database, err := LoadDatabase(getenv)
 	if err != nil {
@@ -51,7 +51,7 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid configuration: HTTP_ADDR port must be between 1 and 65535")
 	}
 	return Config{
-		HTTPAddr: addr, SessionSecret: getenv("SESSION_SECRET"), UploadDir: filepath.Clean(uploadDir),
+		HTTPAddr: addr, TokenSecret: getenv("TOKEN_SECRET"), UploadDir: filepath.Clean(uploadDir),
 		Database: database,
 	}, nil
 }

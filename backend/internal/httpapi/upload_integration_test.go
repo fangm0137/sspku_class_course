@@ -65,48 +65,35 @@ func TestMySQL8Upload(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := newHandler(pool, secret, store)
-	get := func(target string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	// Protected calls carry a bearer token and a plain JSON login body; there is
+	// neither a session cookie nor a CSRF token to fetch.
+	get := func(target, token string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "http://localhost"+target, nil)
-		if cookie != nil {
-			r.AddCookie(cookie)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
 		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	csrf := func(cookie *http.Cookie) (*http.Cookie, string) {
-		w := get("/api/csrf", cookie)
-		var body map[string]string
-		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil {
-			t.Fatal("csrf failed")
-		}
-		if cookie == nil {
-			cookie = w.Result().Cookies()[0]
-		}
-		return cookie, body["csrf_token"]
-	}
-	cookies := map[string]*http.Cookie{}
 	tokens := map[string]string{}
 	for _, name := range []string{"teacher_a", "student_a1", "student_b1"} {
-		cookie, token := csrf(nil)
 		r := httptest.NewRequest("POST", "http://localhost/api/login", strings.NewReader(loginJSON(name, password)))
-		r.AddCookie(cookie)
-		r.Header.Set("Origin", "http://localhost")
-		r.Header.Set("X-CSRF-Token", token)
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
-		if w.Code != 200 {
+		var reply struct {
+			Token string `json:"token"`
+		}
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &reply) != nil || reply.Token == "" || len(w.Result().Cookies()) != 0 {
 			t.Fatal("login failed")
 		}
-		cookies[name], tokens[name] = csrf(w.Result().Cookies()[0])
+		tokens[name] = reply.Token
 	}
 	auth := func(r *http.Request, name string) {
 		if name != "" {
-			r.AddCookie(cookies[name])
-			r.Header.Set("X-CSRF-Token", tokens[name])
+			r.Header.Set("Authorization", "Bearer "+tokens[name])
 		}
-		r.Header.Set("Origin", "http://localhost")
 	}
 	upload := func(name, filename string, body []byte) *httptest.ResponseRecorder {
 		r := uploadRequest(testUploadPart{"file", filename, body})
@@ -170,17 +157,17 @@ func TestMySQL8Upload(t *testing.T) {
 			}
 			for _, identity := range []string{"teacher_a", "student_a1"} {
 				for _, suffix := range []string{"", "/file"} {
-					if get(fmt.Sprintf("/api/materials/%d%s", id, suffix), cookies[identity]).Code != 200 {
+					if get(fmt.Sprintf("/api/materials/%d%s", id, suffix), tokens[identity]).Code != 200 {
 						t.Fatal("same class cannot read immediately")
 					}
 				}
 			}
-			if get(fmt.Sprintf("/api/materials/%d/file", id), cookies["student_b1"]).Code != 404 {
+			if get(fmt.Sprintf("/api/materials/%d/file", id), tokens["student_b1"]).Code != 404 {
 				t.Fatal("B read A")
 			}
 		}
 		for _, identity := range []string{"teacher_a", "student_a1", "student_b1"} {
-			w := get("/api/materials?class_id=999", cookies[identity])
+			w := get("/api/materials?class_id=999", tokens[identity])
 			var body struct {
 				Items []materialView `json:"items"`
 			}
@@ -211,14 +198,11 @@ func TestMySQL8Upload(t *testing.T) {
 			checkError(w, status)
 		}
 		r := uploadRequest(testUploadPart{"file", "a.txt", []byte("text")})
-		auth(r, "teacher_a")
-		r.Header.Del("X-CSRF-Token")
+		r.Header.Set("Authorization", "Bearer not-a-real-token")
 		r.Body = forbiddenBody{t}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
-		if w.Code != 403 || !strings.Contains(w.Body.String(), "csrf_invalid") {
-			t.Fatal("CSRF gate failed")
-		}
+		checkError(w, 401)
 		checkError(upload("teacher_a", "a.pdf", []byte("bad")), 400)
 		checkError(upload("teacher_a", "a.txt", []byte(strings.Repeat("a", maxMaterial+1))), 413)
 		if counts() != before {
@@ -273,13 +257,13 @@ func TestMySQL8Upload(t *testing.T) {
 				t.Fatalf("valid input failed: %d", w.Code)
 			}
 			id := reply["material_id"]
-			if get(fmt.Sprintf("/api/materials/%d/file", id), cookies["teacher_a"]).Body.String() != string(body) {
+			if get(fmt.Sprintf("/api/materials/%d/file", id), tokens["teacher_a"]).Body.String() != string(body) {
 				t.Fatal("original changed")
 			}
 			var detail struct {
 				Text string `json:"text"`
 			}
-			if json.Unmarshal(get(fmt.Sprintf("/api/materials/%d", id), cookies["student_a1"]).Body.Bytes(), &detail) != nil || detail.Text != strings.TrimPrefix(string(body), "\xef\xbb\xbf") {
+			if json.Unmarshal(get(fmt.Sprintf("/api/materials/%d", id), tokens["student_a1"]).Body.Bytes(), &detail) != nil || detail.Text != strings.TrimPrefix(string(body), "\xef\xbb\xbf") {
 				t.Fatal("text extraction differs")
 			}
 		}
@@ -300,10 +284,10 @@ func TestMySQL8Upload(t *testing.T) {
 		if attempts != 1 || store.ready.Load() || counts()[3] != before[3]+1 {
 			t.Fatal("compensation policy wrong")
 		}
-		for _, target := range []string{"/api/materials", "/api/me", "/api/csrf"} {
-			checkError(get(target, cookies["teacher_a"]), 503)
+		for _, target := range []string{"/api/materials", "/api/me", "/api/materials/1"} {
+			checkError(get(target, tokens["teacher_a"]), 503)
 		}
-		if get("/health", nil).Code != 200 {
+		if get("/health", "").Code != 200 {
 			t.Fatal("health blocked")
 		}
 		store.fault = func(point string) error {
@@ -375,7 +359,7 @@ func TestMySQL8Upload(t *testing.T) {
 			t.Fatal("retry not independent")
 		}
 		for _, id := range []uint64{first, reply["material_id"]} {
-			if get(fmt.Sprintf("/api/materials/%d/file", id), cookies["teacher_a"]).Body.String() != "# persistent" {
+			if get(fmt.Sprintf("/api/materials/%d/file", id), tokens["teacher_a"]).Body.String() != "# persistent" {
 				t.Fatal("retry files not both intact")
 			}
 		}

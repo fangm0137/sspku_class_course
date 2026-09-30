@@ -1,6 +1,6 @@
 # 材料读取与班级隔离（T4.1–T4.3）
 
-按 FIXTURES.md 初始化，server 使用相同的绝对 UPLOAD_DIR。按 AUTH.md 登录，读取请求携带服务端返回的会话 Cookie，不需要 CSRF token。
+按 FIXTURES.md 初始化，server 使用相同的绝对 UPLOAD_DIR。按 AUTH.md 登录，读取请求携带 `Authorization: Bearer <token>`，不再需要 Cookie 或 CSRF token。
 
 | 路由 | 成功状态及内容 |
 | --- | --- |

@@ -18,7 +18,9 @@ func (s *uploadStore) Recover(ctx context.Context) error {
 	defer s.mu.Unlock()
 	s.ready.Store(false)
 	var count int
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM materials m LEFT JOIN knowledge_entries k ON k.material_id=m.id LEFT JOIN users u ON u.id=m.uploader_id LEFT JOIN classes c ON c.id=m.class_id LEFT JOIN sessions s ON s.user_id=u.id WHERE 1=0").Scan(&count); err != nil {
+	// Readiness probe: every business table that a request depends on must be
+	// queryable. Authentication is stateless now, so no session table is joined.
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM materials m LEFT JOIN knowledge_entries k ON k.material_id=m.id LEFT JOIN users u ON u.id=m.uploader_id LEFT JOIN classes c ON c.id=m.class_id WHERE 1=0").Scan(&count); err != nil {
 		return err
 	}
 	if err := s.prepareDirectories(); err != nil {

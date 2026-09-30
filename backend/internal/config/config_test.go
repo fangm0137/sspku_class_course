@@ -8,8 +8,8 @@ import (
 
 func validEnvironment() map[string]string {
 	return map[string]string{
-		"UPLOAD_DIR":     os.TempDir(),
-		"SESSION_SECRET": "test-only-not-a-real-secret", "DB_HOST": "db.invalid",
+		"UPLOAD_DIR":   os.TempDir(),
+		"TOKEN_SECRET": "test-only-not-a-real-secret", "DB_HOST": "db.invalid",
 		"DB_PORT": "3306", "DB_NAME": "test_db", "DB_USER": "test_user",
 		"DB_PASSWORD": "test-only-not-a-real-password",
 	}
@@ -25,7 +25,7 @@ func TestLoadRejectsMissingEmptyAndWhitespaceRequiredValues(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), key) {
 					t.Fatalf("expected error identifying %s", key)
 				}
-				for _, secretKey := range []string{"SESSION_SECRET", "DB_PASSWORD"} {
+				for _, secretKey := range []string{"TOKEN_SECRET", "DB_PASSWORD"} {
 					if strings.Contains(err.Error(), validEnvironment()[secretKey]) {
 						t.Fatal("configuration error leaked a credential")
 					}
@@ -46,7 +46,7 @@ func TestLoadValidConfigurationPreservesSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != "127.0.0.1:8080" || cfg.Database.Password != env["DB_PASSWORD"] || cfg.SessionSecret != env["SESSION_SECRET"] {
+	if cfg.HTTPAddr != "127.0.0.1:8080" || cfg.Database.Password != env["DB_PASSWORD"] || cfg.TokenSecret != env["TOKEN_SECRET"] {
 		t.Fatal("configuration values changed unexpectedly")
 	}
 }

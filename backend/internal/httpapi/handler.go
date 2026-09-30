@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-// Health does not touch the session database, even when it is unavailable.
+// Health does not touch the account database, even when it is unavailable.
 func NewHandler(db *sql.DB, secret string, uploadDirectories ...string) http.Handler {
 	directory := ""
 	if len(uploadDirectories) > 0 {
@@ -15,19 +15,21 @@ func NewHandler(db *sql.DB, secret string, uploadDirectories ...string) http.Han
 	return newHandler(db, secret, newUploadStore(db, directory))
 }
 
+// newHandler wires every route behind bearer token authentication. Only login
+// and the liveness probe stay anonymous; GET /api/csrf is intentionally gone,
+// so unknown API paths fall through to a plain 404.
 func newHandler(db *sql.DB, secret string, store *uploadStore) http.Handler {
 	mux := http.NewServeMux()
 	security := NewSecurity(db, secret)
 	materials := materialReader{db: db, directory: store.directory}
-	mux.Handle("POST /api/materials", security.RequireIdentity(security.ProtectWrite(http.HandlerFunc(store.upload), true), true))
+	mux.Handle("POST /api/materials", security.RequireIdentity(http.HandlerFunc(store.upload), true))
 	mux.Handle("GET /api/materials", security.RequireIdentity(http.HandlerFunc(materials.list), false))
 	mux.Handle("GET /api/materials/{id}", security.RequireIdentity(http.HandlerFunc(materials.detail), false))
 	mux.Handle("GET /api/materials/{id}/file", security.RequireIdentity(http.HandlerFunc(materials.file), false))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { materialNotFound(w) })
-	mux.HandleFunc("GET /api/csrf", security.CSRF)
-	mux.Handle("POST /api/login", security.ProtectWrite(http.HandlerFunc(security.login), false))
-	mux.HandleFunc("GET /api/me", security.me)
-	mux.Handle("POST /api/logout", security.ProtectWrite(http.HandlerFunc(security.logout), true))
+	mux.Handle("POST /api/login", http.HandlerFunc(security.login))
+	mux.Handle("GET /api/me", security.RequireIdentity(http.HandlerFunc(security.me), false))
+	mux.Handle("POST /api/logout", security.RequireIdentity(http.HandlerFunc(security.logout), false))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

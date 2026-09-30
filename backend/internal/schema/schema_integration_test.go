@@ -1,9 +1,7 @@
 package schema
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -11,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"campusclaw/backend/internal/config"
 	"campusclaw/backend/internal/db"
@@ -69,9 +66,15 @@ func TestMySQL8Schema(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows.Close()
-	expected := []string{"classes", "knowledge_entries", "materials", "schema_migrations", "sessions", "users"}
+	// 000002 drops the session table: authentication is stateless bearer tokens now.
+	expected := []string{"classes", "knowledge_entries", "materials", "schema_migrations", "users"}
 	if !reflect.DeepEqual(tables, expected) {
 		t.Fatalf("unexpected tables: %v", tables)
+	}
+	for _, table := range tables {
+		if table == "sessions" {
+			t.Fatal("sessions table must be dropped by migration 000002")
+		}
 	}
 	t.Logf("SHOW TABLES: %s", strings.Join(tables, ", "))
 	for _, table := range []string{"materials", "knowledge_entries"} {
@@ -90,13 +93,13 @@ func TestMySQL8Schema(t *testing.T) {
 			t.Fatal("class_id needs a leading index")
 		}
 	}
-	for _, table := range []string{"classes", "users", "sessions", "materials", "knowledge_entries"} {
+	for _, table := range []string{"classes", "users", "materials", "knowledge_entries"} {
 		var count int
 		if err := pool.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("%s must be empty; migrations must not seed data", table)
 		}
 	}
-	t.Log("all five business tables empty after migration")
+	t.Log("all four business tables empty after migration")
 	tx, err := pool.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -146,15 +149,6 @@ func TestMySQL8Schema(t *testing.T) {
 	reject("plaintext password format", 3819, "INSERT INTO users(username,password_hash,role,class_id) VALUES (?,?,?,?)", "invalid-hash", "not-a-password-hash", "student", a)
 	reject("user class foreign key", 1452, "INSERT INTO users(username,password_hash,role,class_id) VALUES (?,?,?,?)", "invalid-class", hash, "student", 999999)
 	reject("role enum", 1265, "INSERT INTO users(username,password_hash,role,class_id) VALUES (?,?,?,?)", "invalid-role", hash, "admin", a)
-	mac := hmac.New(sha256.New, salt)
-	mac.Write(password)
-	digest := mac.Sum(nil)
-	now := time.Now().UTC()
-	execID("INSERT INTO sessions(session_id_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)", digest, nil, now, now.Add(30*time.Minute))
-	t.Log("PASS anonymous session accepts NULL user_id and 32-byte HMAC digest")
-	reject("duplicate session digest", 1062, "INSERT INTO sessions(session_id_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)", digest, u, now, now.Add(time.Hour))
-	other := sha256.Sum256(digest)
-	reject("session user foreign key", 1452, "INSERT INTO sessions(session_id_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)", other[:], 999999, now, now.Add(time.Hour))
 	m := execID("INSERT INTO materials(class_id,uploader_id,original_name,storage_key,size,source) VALUES (?,?,?,?,?,?)", a, u, "fixture.txt", "fixture-key", 7, "upload")
 	seed := execID("INSERT INTO materials(class_id,uploader_id,original_name,storage_key,size,source) VALUES (?,?,?,?,?,?)", b, nil, "fixture-b.txt", "fixture-seed", 7, "seed")
 	reject("materials class NOT NULL", 1048, "INSERT INTO materials(class_id,original_name,storage_key,size,source) VALUES (?,?,?,?,?)", nil, "bad.txt", "bad-null", 1, "seed")
@@ -170,11 +164,11 @@ func TestMySQL8Schema(t *testing.T) {
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"classes", "users", "sessions", "materials", "knowledge_entries"} {
+	for _, table := range []string{"classes", "users", "materials", "knowledge_entries"} {
 		var count int
 		if err := pool.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("fixture rollback failed: %s", table)
 		}
 	}
-	t.Log("PASS transaction rollback: all five business tables empty")
+	t.Log("PASS transaction rollback: all four business tables empty")
 }

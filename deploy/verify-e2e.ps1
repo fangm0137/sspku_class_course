@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $project = 'campusclaw-t8-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-$names = @('DOCKER_CONFIG','SESSION_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','DB_NAME','DB_USER','CAMPUSCLAW_PORT','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')
+$names = @('DOCKER_CONFIG','TOKEN_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','DB_NAME','DB_USER','CAMPUSCLAW_PORT','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')
 $saved = @{}
 $emptyEnv = New-TemporaryFile
 $directory = Join-Path ([IO.Path]::GetTempPath()) $project
@@ -106,7 +106,7 @@ function Matrix($Actors) {
 try {
     foreach ($name in $names) { $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
     if ($DockerConfigDirectory) { $env:DOCKER_CONFIG=$DockerConfigDirectory }
-    foreach ($name in @('SESSION_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')) { [Environment]::SetEnvironmentVariable($name,[guid]::NewGuid().ToString('N'),'Process') }
+    foreach ($name in @('TOKEN_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')) { [Environment]::SetEnvironmentVariable($name,[guid]::NewGuid().ToString('N'),'Process') }
     $env:DB_NAME='campusclaw'; $env:DB_USER='campusclaw'
     $listener=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0)
     $listener.Start(); $env:CAMPUSCLAW_PORT=[string]$listener.LocalEndpoint.Port; $listener.Stop()
@@ -167,7 +167,7 @@ try {
     $expired=Login 'student_a1' $env:SEED_STUDENT_A1_PASSWORD
     $raw=$expired.Cookies.GetCookies([uri]$base)['campusclaw_session'].Value.Replace('-','+').Replace('_','/')
     $raw=$raw.PadRight([int]([Math]::Ceiling($raw.Length/4)*4),'=')
-    $hmac=[Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($env:SESSION_SECRET))
+    $hmac=[Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($env:TOKEN_SECRET))
     try { $hash=[Convert]::ToHexString($hmac.ComputeHash([Convert]::FromBase64String($raw))) } finally { $hmac.Dispose() }
     $changed=SQL "SET @sid=UNHEX('$hash'); PREPARE expire_one FROM 'UPDATE sessions SET created_at=UTC_TIMESTAMP(6)-INTERVAL 9 HOUR,expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 HOUR,csrf_token_hash=NULL,csrf_expires_at=NULL WHERE session_id_hash=?'; EXECUTE expire_one USING @sid; SELECT ROW_COUNT(); DEALLOCATE PREPARE expire_one;"
     if ($changed -ne '1') { throw 'Expected exactly one expired fixture session' }
@@ -196,7 +196,7 @@ try {
     Matrix $actors
     Write-Output 'PASS T8.2 serial migrate/seed rerun: no change, passwords/IDs/text/files preserved, fresh login and both-way isolation'
     $logs=(& $DockerCommand @composeArgs logs --no-color 2>&1) -join "`n"
-    foreach ($secret in @($env:SESSION_SECRET,$env:DB_PASSWORD,$env:MYSQL_ROOT_PASSWORD,$oldTeacher,$oldA1,$oldB1)) { if ($logs.Contains($secret)) { throw 'Credential found in logs; details suppressed' } }
+    foreach ($secret in @($env:TOKEN_SECRET,$env:DB_PASSWORD,$env:MYSQL_ROOT_PASSWORD,$oldTeacher,$oldA1,$oldB1)) { if ($logs.Contains($secret)) { throw 'Credential found in logs; details suppressed' } }
     foreach ($session in $actors.Values) { if ($logs.Contains($session.Cookies.GetCookies([uri]$base)['campusclaw_session'].Value)) { throw 'Session ID found in logs; details suppressed' } }
     if ((SQL "SELECT COUNT(*) FROM users WHERE password_hash NOT LIKE '`$scrypt`$%';") -ne '0') { throw 'Password storage format mismatch' }
     Write-Output 'PASS credential check: password hashes only, supplied secrets absent from service logs'

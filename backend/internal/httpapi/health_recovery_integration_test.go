@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -50,30 +49,31 @@ func TestMySQL8HealthRecovery(t *testing.T) {
 		t.Fatal("recovery failed")
 	}
 	handler := newHandler(pool, secret, store)
-	get := func(target string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	// Protected calls carry a bearer token; nothing is stored in a cookie.
+	get := func(target, token string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "http://localhost"+target, nil)
-		if cookie != nil {
-			r.AddCookie(cookie)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
 		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
-	csrf := get("/api/csrf", nil)
-	var token map[string]string
-	json.Unmarshal(csrf.Body.Bytes(), &token)
-	r := httptest.NewRequest("POST", "http://localhost/api/login", strings.NewReader(loginJSON("student_b1", password)))
-	r.Header.Set("Origin", "http://localhost")
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("X-CSRF-Token", token["csrf_token"])
-	r.AddCookie(csrf.Result().Cookies()[0])
+	loginRequest := httptest.NewRequest("POST", "http://localhost/api/login", strings.NewReader(loginJSON("student_b1", password)))
+	loginRequest.Header.Set("Content-Type", "application/json")
 	login := httptest.NewRecorder()
-	handler.ServeHTTP(login, r)
+	handler.ServeHTTP(login, loginRequest)
 	if login.Code != 200 {
 		t.Fatal("login failed")
 	}
-	cookie := login.Result().Cookies()[0]
-	before := get("/api/materials", cookie)
+	var body struct {
+		Token string `json:"token"`
+	}
+	if json.Unmarshal(login.Body.Bytes(), &body) != nil || body.Token == "" {
+		t.Fatal("login did not return a token")
+	}
+	token := body.Token
+	before := get("/api/materials", token)
 	if before.Code != 200 || !strings.Contains(before.Body.String(), "class-b-seed.txt") {
 		t.Fatal("initial materials missing")
 	}
@@ -93,14 +93,14 @@ func TestMySQL8HealthRecovery(t *testing.T) {
 	if !stopped {
 		t.Fatal("isolated database did not stop")
 	}
-	health := get("/health", nil)
+	health := get("/health", "")
 	if health.Code != 200 || health.Body.String() != `{"status":"ok"}` {
 		t.Fatal("health depends on DB")
 	}
-	failed := get("/api/materials", cookie)
+	failed := get("/api/materials", token)
 	for i := 0; i < 50 && failed.Code == 200; i++ {
 		time.Sleep(100 * time.Millisecond)
-		failed = get("/api/materials", cookie)
+		failed = get("/api/materials", token)
 	}
 	if failed.Code != 503 || !strings.Contains(failed.Body.String(), "service_unavailable") {
 		t.Fatalf("DB outage response status=%d, expected safe 503", failed.Code)
@@ -149,9 +149,9 @@ func TestMySQL8HealthRecovery(t *testing.T) {
 	if !ready {
 		t.Fatal("independent SELECT 1 readiness failed")
 	}
-	after := get("/api/materials", cookie)
+	after := get("/api/materials", token)
 	if after.Code != 200 || after.Body.String() != before.Body.String() {
-		t.Fatal("same session or persisted materials lost after database restart")
+		t.Fatal("same token or persisted materials lost after database restart")
 	}
-	t.Log("PASS MySQL restart: SELECT 1 ready; same Cookie and persisted materials usable without login")
+	t.Log("PASS MySQL restart: SELECT 1 ready; same token and persisted materials usable without login")
 }

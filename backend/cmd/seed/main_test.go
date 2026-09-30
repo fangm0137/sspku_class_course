@@ -152,10 +152,15 @@ func TestMySQL8Seed(t *testing.T) {
 		if count("classes") != 2 || count("users") != 3 {
 			t.Fatal("wrong fixture counts")
 		}
-		for _, table := range []string{"sessions", "materials", "knowledge_entries"} {
+		// Authentication is stateless: migration 000002 dropped the session table.
+		for _, table := range []string{"materials", "knowledge_entries"} {
 			if count(table) != 0 {
 				t.Fatal("seed created out-of-scope data")
 			}
+		}
+		var sessions int
+		if pool.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='sessions'").Scan(&sessions) != nil || sessions != 0 {
+			t.Fatal("session table must not exist")
 		}
 		want := map[string][2]string{"teacher_a": {"teacher", "A"}, "student_a1": {"student", "A"}, "student_b1": {"student", "B"}}
 		salts := map[string]bool{}

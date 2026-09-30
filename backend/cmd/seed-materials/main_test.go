@@ -199,8 +199,8 @@ func TestMySQL8MaterialSeed(t *testing.T) {
 		if err != nil || !bytes.Equal(file, aContent) {
 			t.Fatal("A file modified")
 		}
-		if count("users") != 3 || count("sessions") != 0 {
-			t.Fatal("extra user/session created")
+		if count("users") != 3 {
+			t.Fatal("extra user created")
 		}
 	})
 	initial := snapshot()

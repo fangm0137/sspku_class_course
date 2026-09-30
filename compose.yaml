@@ -24,7 +24,7 @@ services:
       context: .
       dockerfile: deploy/api.Dockerfile
     environment:
-      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      TOKEN_SECRET: ${TOKEN_SECRET:?TOKEN_SECRET is required}
       DB_HOST: mysql
       DB_PORT: "3306"
       DB_NAME: ${DB_NAME:-campusclaw}

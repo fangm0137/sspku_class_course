@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $project = 'campusclaw-t7-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-$names = @('DOCKER_CONFIG','SESSION_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','DB_NAME','DB_USER','CAMPUSCLAW_PORT','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')
+$names = @('DOCKER_CONFIG','TOKEN_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','DB_NAME','DB_USER','CAMPUSCLAW_PORT','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')
 $saved = @{}
 $emptyEnv = New-TemporaryFile
 $directory = Join-Path ([IO.Path]::GetTempPath()) $project
@@ -36,7 +36,7 @@ function Login([string]$Username, [string]$Password) {
 try {
     foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     if ($DockerConfigDirectory) { $env:DOCKER_CONFIG=$DockerConfigDirectory }
-    foreach ($name in @('SESSION_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')) {
+    foreach ($name in @('TOKEN_SECRET','DB_PASSWORD','MYSQL_ROOT_PASSWORD','SEED_TEACHER_A_PASSWORD','SEED_STUDENT_A1_PASSWORD','SEED_STUDENT_B1_PASSWORD')) {
         [Environment]::SetEnvironmentVariable($name,[guid]::NewGuid().ToString('N'),'Process')
     }
     $env:DB_NAME='campusclaw'; $env:DB_USER='campusclaw'

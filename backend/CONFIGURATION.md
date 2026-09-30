@@ -6,7 +6,7 @@
 
 | 变量 | 使用者 | 约束 |
 | --- | --- | --- |
-| SESSION_SECRET | server | 必需且非空，会话 HMAC 密钥 |
+| TOKEN_SECRET | server | 必需且非空，JWT 的 HS256 签名密钥；更换后全部未过期 token 立即失效 |
 | DB_HOST | server、migrate | 必需且非空 |
 | DB_PORT | server、migrate | 必需，1–65535；MySQL 通常为 3306 |
 | DB_NAME | server、migrate | 必需且非空 |
@@ -17,21 +17,21 @@
 | MYSQL_ROOT_PASSWORD | Compose 的 mysql 服务 | 首次初始化必需；不传给 API 或前端 |
 | CAMPUSCLAW_PORT | Compose 的 nginx 服务 | 可选，默认 8080；仅绑定 127.0.0.1 |
 
-两个初始化命令也读取全部 DB_*；seed-materials 不需种子密码或 SESSION_SECRET，先执行迁移和账号初始化。UPLOAD_DIR 是受信任的运维配置，不是请求参数。UPLOAD_DIR 及其同级 staging 必须专用于本应用；Go 启动会清理临时文件和无引用原文件，不可配置为共享目录，不同时运行初始化或其他 Go 实例。恢复失败时业务 503，修复依赖后人工重启，详见 UPLOAD.md。此表中的材料目录配置自 T3.2 起生效，T1.3 验证记录保留当时的 10 项配置快照。
+两个初始化命令也读取全部 DB_*；seed-materials 不需种子密码或 TOKEN_SECRET，先执行迁移和账号初始化。UPLOAD_DIR 是受信任的运维配置，不是请求参数。UPLOAD_DIR 及其同级 staging 必须专用于本应用；Go 启动会清理临时文件和无引用原文件，不可配置为共享目录，不同时运行初始化或其他 Go 实例。恢复失败时业务 503，修复依赖后人工重启，详见 UPLOAD.md。此表中的材料目录配置自 T3.2 起生效，T1.3 验证记录保留当时的 10 项配置快照。
 
-必需项纯空白也视为缺失。SESSION_SECRET 原值同样不裁剪，由环境提供随机密钥，不设内置值。配置错误只报告变量名，不打印值、连接串或整个配置对象。当前启动与迁移使用安全错误文本；后续请求日志也不得记录密码、Cookie、会话 ID、CSRF token 或其摘要。不要将输出完整环境、shell 跟踪或 `docker compose config` 的日志作为验收附件。
+必需项纯空白也视为缺失。TOKEN_SECRET 原值同样不裁剪，由环境提供随机密钥，不设内置值。配置错误只报告变量名，不打印值、连接串或整个配置对象。当前启动与迁移使用安全错误文本；后续请求日志也不得记录密码、token 原文或其签名。不要将输出完整环境、shell 跟踪或 `docker compose config` 的日志作为验收附件。
 
 ## 初始化与固定约定
 
 数据库连接时区固定为 UTC，与 Go 的 DATETIME 解析一致，created_at 返回 UTC RFC3339；页面按浏览器时区显示。T6 修正仅影响此后数据库连接，不推测或批量改写历史记录时区。
 
-三个独立种子密码变量为 SEED_TEACHER_A_PASSWORD、SEED_STUDENT_A1_PASSWORD、SEED_STUDENT_B1_PASSWORD，分别对应 teacher_a、student_a1、student_b1。cmd/seed 读取它们，另需上表全部 DB_*，不需 SESSION_SECRET。密码必须为有效 UTF-8、1–128 码点且不能纯空白；其余原值保留，在数据库访问前全部校验。重复执行也必须提供密码，但不重置旧密码。server/migrate 不读取种子密码；禁止将服务端凭据放入 VITE_* 或前端产物。
+三个独立种子密码变量为 SEED_TEACHER_A_PASSWORD、SEED_STUDENT_A1_PASSWORD、SEED_STUDENT_B1_PASSWORD，分别对应 teacher_a、student_a1、student_b1。cmd/seed 读取它们，另需上表全部 DB_*，不需 TOKEN_SECRET。密码必须为有效 UTF-8、1–128 码点且不能纯空白；其余原值保留，在数据库访问前全部校验。重复执行也必须提供密码，但不重置旧密码。server/migrate 不读取种子密码；禁止将服务端凭据放入 VITE_* 或前端产物。
 
-会话固定 8 小时，不滑动续期；匿名会话 30 分钟；CSRF 取 30 分钟与会话剩余时间的较小值，重新获取或替换/删除会话后旧 token 失效。以上已实现，无 TTL 环境开关。正常重建保留数据库、原密钥与到期时间后，未过期会话应继续有效；第 7 组已验证保留卷与原密钥重建后原会话有效；第 8 组仍需完整矩阵与过期会话验收，换密钥需重新登录。
+token 有效期固定 8 小时，不滑动续期，无 TTL 环境开关；不再有匿名会话与 CSRF 令牌期限。正常重建保留数据库与原 TOKEN_SECRET 后，未过期 token 继续有效且无需重新登录；更换密钥则全部 token 立即失效。
 
 | Compose 命名卷 | 服务及挂载点 | 内容 |
 | --- | --- | --- |
-| mysql_data | MySQL `/var/lib/mysql` | 表、账号哈希、会话、材料和知识库记录 |
+| mysql_data | MySQL `/var/lib/mysql` | 表、账号哈希、材料和知识库记录（迁移 000002 后不再有会话表） |
 | material_data | Go `/data` | `/data/uploads` 原文件与 `/data/staging` 临时文件 |
 
 Nginx 不挂载材料卷。正常停止/重建必须保留两个卷，不使用删除卷选项。Compose、镜像构建与两个命名卷已在隔离 Docker 项目验证，停机重建和备份恢复通过，测试结束后停止容器并保留测试卷。本地材料初始化使用 T3.2 新增的 UPLOAD_DIR。`/health` 仅报告进程存活，不能据此认定数据库或上传存储就绪。部署及恢复见 [部署说明](../deploy/README.md)。

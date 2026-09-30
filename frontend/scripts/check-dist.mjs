@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const names = ['SESSION_SECRET', 'DB_PASSWORD', 'SEED_TEACHER_A_PASSWORD', 'SEED_STUDENT_A1_PASSWORD', 'SEED_STUDENT_B1_PASSWORD'];
+const names = ['TOKEN_SECRET', 'DB_PASSWORD', 'SEED_TEACHER_A_PASSWORD', 'SEED_STUDENT_A1_PASSWORD', 'SEED_STUDENT_B1_PASSWORD'];
 async function inspect(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const file = path.join(directory, entry.name);

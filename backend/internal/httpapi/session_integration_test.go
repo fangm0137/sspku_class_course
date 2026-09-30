@@ -3,7 +3,6 @@ package httpapi
 import (
 	"database/sql"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -53,82 +52,66 @@ func TestMySQL8Session(t *testing.T) {
 	for _, role := range []string{"teacher", "student"} {
 		exec(t, "INSERT INTO users (username,password_hash,role,class_id) VALUES (?,?,?,?)", "session-"+role, hash, role, classA)
 	}
-	request := func(method, path string, cookie *http.Cookie, token, body, origin string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, path, strings.NewReader(body))
-		if cookie != nil {
-			r.AddCookie(cookie)
-		}
+	// Identity now travels in the Authorization header; there is no cookie and no
+	// write-protection token endpoint.
+	request := func(method, path, token string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
 		if token != "" {
-			r.Header.Set("X-CSRF-Token", token)
+			r.Header.Set("Authorization", "Bearer "+token)
 		}
-		if origin != "" {
-			r.Header.Set("Origin", origin)
-		}
-		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
 		return w
 	}
 	checkError := func(t *testing.T, w *httptest.ResponseRecorder, status int) {
 		t.Helper()
-		if w.Code != status {
-			t.Fatalf("got %d want %d", w.Code, status)
-		}
 		var obj map[string]string
-		codes := map[int]string{401: "unauthenticated", 403: "csrf_invalid", 503: "service_unavailable"}
-		messages := map[int]string{401: "请先登录", 403: "请求校验失败", 503: "服务暂不可用"}
-		if json.Unmarshal(w.Body.Bytes(), &obj) != nil || len(obj) != 2 || obj["error"] != codes[status] || obj["message"] != messages[status] || len(w.Result().Cookies()) != 0 || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Content-Type") != "application/json" {
+		codes := map[int]string{401: "unauthenticated", 404: "not_found", 503: "service_unavailable"}
+		messages := map[int]string{401: "请先登录", 404: "资源不存在", 503: "服务暂不可用"}
+		if w.Code != status || json.Unmarshal(w.Body.Bytes(), &obj) != nil || len(obj) != 2 || obj["error"] != codes[status] || obj["message"] != messages[status] || len(w.Result().Cookies()) != 0 || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Content-Type") != "application/json" {
 			t.Fatal("unsafe failure response")
 		}
 	}
-	csrf := func(t *testing.T, base string, cookie *http.Cookie) (*http.Cookie, string) {
+	login := func(t *testing.T, role string) string {
 		t.Helper()
-		w := request("GET", base+"/api/csrf", cookie, "", "", "")
-		if w.Code != 200 {
-			t.Fatal("CSRF prerequisite failed")
-		}
-		if len(w.Result().Cookies()) != 0 {
-			cookie = w.Result().Cookies()[0]
-		}
-		var obj map[string]string
-		if json.Unmarshal(w.Body.Bytes(), &obj) != nil {
-			t.Fatal("invalid CSRF response")
-		}
-		return cookie, obj["csrf_token"]
-	}
-	login := func(t *testing.T, base, role string) (*http.Cookie, string) {
-		t.Helper()
-		cookie, token := csrf(t, base, nil)
-		w := request("POST", base+"/api/login", cookie, token, loginJSON("session-"+role, password), base)
-		if w.Code != 200 || len(w.Result().Cookies()) != 1 {
+		r := httptest.NewRequest("POST", "http://localhost:8080/api/login", strings.NewReader(loginJSON("session-"+role, password)))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != 200 || len(w.Result().Cookies()) != 0 {
 			t.Fatal("login prerequisite failed")
 		}
-		return csrf(t, base, w.Result().Cookies()[0])
+		var obj struct {
+			Token string `json:"token"`
+		}
+		if json.Unmarshal(w.Body.Bytes(), &obj) != nil || obj.Token == "" {
+			t.Fatal("login did not return a token")
+		}
+		return obj.Token
 	}
-	countSession := func(t *testing.T, cookie *http.Cookie) int {
+	userID := func(t *testing.T, username string) uint64 {
 		t.Helper()
-		raw, ok := decodeValue(cookie.Value)
-		if !ok {
-			t.Fatal("invalid fixture cookie")
+		var id uint64
+		if pool.QueryRow("SELECT id FROM users WHERE username=?", username).Scan(&id) != nil {
+			t.Fatal("fixture identity lookup failed")
 		}
-		var n int
-		if pool.QueryRow("SELECT COUNT(*) FROM sessions WHERE session_id_hash=?", security.digest(raw)).Scan(&n) != nil {
-			t.Fatal("cannot count session")
-		}
-		return n
+		return id
 	}
 	const base = "http://localhost:8080"
 	t.Run("teacher-student-me-latest-identity", func(t *testing.T) {
 		for _, role := range []string{"teacher", "student"} {
-			cookie, _ := login(t, base, role)
-			w := request("GET", base+"/api/me?role=admin&class_id=999", cookie, "", "", "")
+			token := login(t, role)
+			w := request("GET", base+"/api/me?role=admin&class_id=999", token)
 			var obj map[string]json.RawMessage
 			var got userIdentity
 			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &obj) != nil || len(obj) != 4 || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.ID == 0 || got.Username != "session-"+role || got.Role != role || got.ClassID != uint64(classA) || w.Header().Get("Cache-Control") != "no-store" || len(w.Result().Cookies()) != 0 {
 				t.Fatal("identity contract failed")
 			}
+			if strings.Contains(w.Body.String(), token) {
+				t.Fatal("me must not echo the token back")
+			}
 			exec(t, "UPDATE users SET class_id=? WHERE id=?", classB, got.ID)
-			w = request("GET", base+"/api/me", cookie, "", "", "")
+			w = request("GET", base+"/api/me", token)
 			json.Unmarshal(w.Body.Bytes(), &got)
 			if w.Code != 200 || got.ClassID != uint64(classB) {
 				t.Fatal("me used stale identity")
@@ -136,88 +119,59 @@ func TestMySQL8Session(t *testing.T) {
 			exec(t, "UPDATE users SET class_id=? WHERE id=?", classA, got.ID)
 		}
 	})
-	t.Run("anonymous-invalid-expired-priority", func(t *testing.T) {
-		anonymous, token := csrf(t, base, nil)
+	t.Run("anonymous-invalid-expired-token", func(t *testing.T) {
 		_, unknown := randomValue()
-		cookies := []*http.Cookie{nil, anonymous, {Name: sessionCookie, Value: "invalid"}, {Name: sessionCookie, Value: unknown}}
-		expired, _ := login(t, base, "student")
-		raw, _ := decodeValue(expired.Value)
-		exec(t, "UPDATE sessions SET created_at=?,expires_at=?,csrf_token_hash=NULL,csrf_expires_at=NULL WHERE session_id_hash=?", time.Now().UTC().Add(-2*time.Hour), time.Now().UTC().Add(-time.Hour), security.digest(raw))
-		cookies = append(cookies, expired)
-		for _, cookie := range cookies {
-			checkError(t, request("GET", base+"/api/me", cookie, "", "", ""), 401)
-			checkError(t, request("POST", base+"/api/logout", cookie, token, "", "http://evil.test"), 401)
+		expiredUser := userIdentity{ID: userID(t, "session-student"), Username: "session-student", Role: "student", ClassID: uint64(classA)}
+		expired, _ := security.issueToken(expiredUser, time.Now().UTC().Add(-9*time.Hour))
+		if expired == "" {
+			t.Fatal("cannot build an expired fixture token")
+		}
+		for _, token := range []string{"", "invalid", "a.b.c", unknown, expired} {
+			checkError(t, request("GET", base+"/api/me", token), 401)
+			checkError(t, request("POST", base+"/api/logout", token), 401)
+		}
+		checkError(t, request("GET", base+"/api/csrf", ""), 404)
+		checkError(t, request("GET", base+"/api/csrf", login(t, "teacher")), 404)
+	})
+	t.Run("logout-is-client-side-and-stateless", func(t *testing.T) {
+		first := login(t, "student")
+		second := login(t, "student")
+		if first == second {
+			t.Fatal("each login must issue its own token")
+		}
+		w := request("POST", base+"/api/logout", first)
+		var obj map[string]bool
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &obj) != nil || len(obj) != 1 || !obj["ok"] || w.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal("logout response invalid")
+		}
+		if len(w.Result().Cookies()) != 0 {
+			t.Fatal("logout must not touch cookies")
+		}
+		// Nothing is stored server side, so the token itself stays valid until exp
+		// and the other login is unaffected.
+		if request("GET", base+"/api/me", first).Code != 200 || request("GET", base+"/api/me", second).Code != 200 {
+			t.Fatal("stateless tokens must remain usable")
+		}
+		var tables int
+		if pool.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=? AND table_name='sessions'", cfg.Name).Scan(&tables) != nil || tables != 0 {
+			t.Fatal("no replayable session table may exist")
 		}
 	})
-	t.Run("csrf-failures-preserve-session", func(t *testing.T) {
-		cookie, token := login(t, base, "teacher")
-		for _, bad := range []string{"", "invalid"} {
-			checkError(t, request("POST", base+"/api/logout", cookie, bad, "", base), 403)
-		}
-		for _, origin := range []string{"", "http://evil.test"} {
-			checkError(t, request("POST", base+"/api/logout", cookie, token, "", origin), 403)
-		}
-		cookie, fresh := csrf(t, base, cookie)
-		checkError(t, request("POST", base+"/api/logout", cookie, token, "", base), 403)
-		if countSession(t, cookie) != 1 || request("GET", base+"/api/me", cookie, "", "", "").Code != 200 {
-			t.Fatal("CSRF rejection changed session")
-		}
-		raw, _ := decodeValue(cookie.Value)
-		exec(t, "UPDATE sessions SET csrf_expires_at=? WHERE session_id_hash=?", time.Now().UTC().Add(-time.Second), security.digest(raw))
-		checkError(t, request("POST", base+"/api/logout", cookie, fresh, "", base), 403)
-	})
-	t.Run("logout-clears-cookie-and-rejects-replay", func(t *testing.T) {
-		for _, target := range []string{base, "https://localhost:8443"} {
-			cookie, token := login(t, target, "student")
-			other, _ := login(t, target, "student")
-			w := request("POST", target+"/api/logout", cookie, token, "", target)
-			var obj map[string]bool
-			if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &obj) != nil || len(obj) != 1 || !obj["ok"] || w.Header().Get("Cache-Control") != "no-store" {
-				t.Fatal("logout response invalid")
-			}
-			cleared := w.Result().Cookies()
-			if len(cleared) != 1 {
-				t.Fatal("missing cookie deletion")
-			}
-			c := cleared[0]
-			if c.Name != sessionCookie || c.Value != "" || c.Path != "/" || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.MaxAge != -1 || !c.Expires.Before(time.Now()) || c.Secure != strings.HasPrefix(target, "https:") {
-				t.Fatal("cookie deletion attributes invalid")
-			}
-			if countSession(t, cookie) != 0 || countSession(t, other) != 1 {
-				t.Fatal("wrong session deleted")
-			}
-			checkError(t, request("GET", target+"/api/me", cookie, "", "", ""), 401)
-			checkError(t, request("POST", target+"/api/logout", cookie, token, "", target), 401)
-			if request("GET", target+"/api/me", other, "", "", "").Code != 200 {
-				t.Fatal("other session revoked")
-			}
-		}
-	})
-	t.Run("delete-failure-rollback-and-database-outage", func(t *testing.T) {
-		cookie, token := login(t, base, "teacher")
-		exec(t, "CREATE TRIGGER session_reject_delete BEFORE DELETE ON sessions FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='private failure detail'")
-		checkError(t, request("POST", base+"/api/logout", cookie, token, "", base), 503)
-		exec(t, "DROP TRIGGER session_reject_delete")
-		if countSession(t, cookie) != 1 || request("GET", base+"/api/me", cookie, "", "", "").Code != 200 {
-			t.Fatal("failed delete revoked session")
-		}
+	t.Run("database-outage-and-recovery", func(t *testing.T) {
+		token := login(t, "teacher")
 		exec(t, "RENAME TABLE users TO session_users_unavailable")
-		checkError(t, request("GET", base+"/api/me", cookie, "", "", ""), 503)
+		checkError(t, request("GET", base+"/api/me", token), 503)
 		exec(t, "RENAME TABLE session_users_unavailable TO users")
-		exec(t, "RENAME TABLE sessions TO sessions_unavailable")
-		checkError(t, request("GET", base+"/api/me", cookie, "", "", ""), 503)
-		checkError(t, request("POST", base+"/api/logout", cookie, token, "", base), 503)
-		exec(t, "RENAME TABLE sessions_unavailable TO sessions")
-		if request("GET", base+"/api/me", cookie, "", "", "").Code != 200 {
-			t.Fatal("recovered database lost session")
+		if request("GET", base+"/api/me", token).Code != 200 {
+			t.Fatal("recovered database lost the token identity")
 		}
-		if request("POST", base+"/api/logout", cookie, token, "", base).Code != 200 {
+		if request("POST", base+"/api/logout", token).Code != 200 {
 			t.Fatal("logout did not recover")
 		}
 		pool.Close()
-		checkError(t, request("GET", base+"/api/me", cookie, "", "", ""), 503)
-		checkError(t, request("POST", base+"/api/logout", cookie, token, "", base), 503)
-		if request("GET", base+"/health", nil, "", "", "").Code != 200 {
+		checkError(t, request("GET", base+"/api/me", token), 503)
+		checkError(t, request("POST", base+"/api/logout", token), 503)
+		if request("GET", base+"/health", "").Code != 200 {
 			t.Fatal("health depends on database")
 		}
 	})

@@ -2,13 +2,16 @@
 
 部署文件及流程已在 Docker Desktop Linux Engine 29.8.0 上验证：镜像构建、串行初始化、Nginx 代理、保留卷重建以及恢复到全新项目均通过。真实命令和结果见 VERIFY-T7.md；第 8 组三账号访问矩阵、过期 Cookie 和全部 Scenario 证据也已完成，见 VERIFY-T8.md 和 SCENARIO-EVIDENCE.md。
 
+> **变更提示（switch-auth-to-jwt-token）**：认证已由 Cookie 会话改为无状态 JWT，环境项 `SESSION_SECRET` 更名为 `TOKEN_SECRET`（作 HS256 签名密钥），迁移新增 `000002_drop_sessions`，`sessions` 表随之删除。Compose 与 `verify-config.ps1` / `verify-proxy.ps1` 的配置校验已同步改名。
+> `verify-e2e.ps1` 中与登录 Cookie、`X-CSRF-Token`、会话表相关的断言仍描述第 3 课方案，尚未按 token 契约重写；`VERIFY-T7.md`、`VERIFY-T8.md`、`SCENARIO-EVIDENCE.md` 是当时的验收记录，不随本次变更改写。以 token 契约重跑完整部署矩阵属于后续待办。
+
 ## 前提与配置
 
 使用 Docker Desktop 的 Linux containers 模式及 Docker Compose v2；Windows 示例使用 PowerShell 7.4+，以保证原生程序重定向二进制备份时不改写字节。所有命令从仓库根目录执行。
 
-三个服务为 mysql（MySQL 8.0）、api（Go）、nginx（Vite 静态页面及反向代理）。仅 Nginx 绑定 `127.0.0.1:8080`；可用 CAMPUSCLAW_PORT 改端口。MySQL 与 API 不发布宿主机端口。mysql_data 持久化 MySQL 全部数据，包括 sessions；material_data 挂载 API 的 /data，含 uploads 和 staging。Nginx 不挂载材料卷。
+三个服务为 mysql（MySQL 8.0）、api（Go）、nginx（Vite 静态页面及反向代理）。仅 Nginx 绑定 `127.0.0.1:8080`；可用 CAMPUSCLAW_PORT 改端口。MySQL 与 API 不发布宿主机端口。mysql_data 持久化 MySQL 全部数据（账号、班级、材料与知识库；迁移 000002 后不再有会话表）；material_data 挂载 API 的 /data，含 uploads 和 staging。Nginx 不挂载材料卷。
 
-必需环境项为 SESSION_SECRET、DB_PASSWORD、MYSQL_ROOT_PASSWORD；初始化另需三个 SEED_*_PASSWORD。DB_NAME 和 DB_USER 在 Compose 中默认 campusclaw，DB_USER 必须为非 root 独立应用账号。容器固定 DB_HOST=mysql、DB_PORT=3306、HTTP_ADDR=0.0.0.0:8080、UPLOAD_DIR=/data/uploads；不使用本机开发目录。MYSQL_ROOT_PASSWORD 仅传给 MySQL，API 不获得 root 密码。
+必需环境项为 TOKEN_SECRET、DB_PASSWORD、MYSQL_ROOT_PASSWORD；初始化另需三个 SEED_*_PASSWORD。DB_NAME 和 DB_USER 在 Compose 中默认 campusclaw，DB_USER 必须为非 root 独立应用账号。容器固定 DB_HOST=mysql、DB_PORT=3306、HTTP_ADDR=0.0.0.0:8080、UPLOAD_DIR=/data/uploads；不使用本机开发目录。MYSQL_ROOT_PASSWORD 仅传给 MySQL，API 不获得 root 密码。
 
 从环境或凭据管理工具提供真实值。可交互读入，避免明文出现在命令历史：
 
@@ -19,7 +22,7 @@ function Set-PrivateEnvironmentValue([string]$VariableName) {
         [Environment]::SetEnvironmentVariable($VariableName, [Net.NetworkCredential]::new('', $value).Password, 'Process')
     } finally { $value.Dispose() }
 }
-Set-PrivateEnvironmentValue 'SESSION_SECRET'
+Set-PrivateEnvironmentValue 'TOKEN_SECRET'
 Set-PrivateEnvironmentValue 'DB_PASSWORD'
 Set-PrivateEnvironmentValue 'MYSQL_ROOT_PASSWORD'
 Set-PrivateEnvironmentValue 'SEED_TEACHER_A_PASSWORD'
@@ -27,7 +30,7 @@ Set-PrivateEnvironmentValue 'SEED_STUDENT_A1_PASSWORD'
 Set-PrivateEnvironmentValue 'SEED_STUDENT_B1_PASSWORD'
 ```
 
-SESSION_SECRET 应由可信随机源产生并安全保管，重建时使用同一值，不每次重新生成。若使用本地 .env，复制根 .env.example 后填写并保留 Git 忽略；Compose 会读取它，原生 Go 不会自动读取。不要输出完整 `docker compose config`、环境、Cookie 或请求头；配置静默验证使用 `docker compose config --quiet`。verify-config.ps1 使用随机测试值在内存解析配置，不打印秘密。
+TOKEN_SECRET 应由可信随机源产生并安全保管，重建时使用同一值，不每次重新生成。若使用本地 .env，复制根 .env.example 后填写并保留 Git 忽略；Compose 会读取它，原生 Go 不会自动读取。不要输出完整 `docker compose config`、环境、Cookie 或请求头；配置静默验证使用 `docker compose config --quiet`。verify-config.ps1 使用随机测试值在内存解析配置，不打印秘密。
 
 ## 首次串行初始化与启动
 
@@ -85,7 +88,7 @@ docker compose down
 docker compose up -d --wait
 ```
 
-不运行 `down -v`、`volume prune` 或删除命名卷。down 默认保留卷；重建需要原数据库密码和相同 SESSION_SECRET。修改初始化密码环境变量不会改变已有 MySQL/应用账号密码。保留两个卷并不自动保留外部环境配置，必须另行安全保管。完整的未过期 Cookie、过期 Cookie、原文件哈希、两表记录验收已在第 8 组通过。
+不运行 `down -v`、`volume prune` 或删除命名卷。down 默认保留卷；重建需要原数据库密码和相同 TOKEN_SECRET。修改初始化密码环境变量不会改变已有 MySQL/应用账号密码。保留两个卷并不自动保留外部环境配置，必须另行安全保管。完整的未过期 Cookie、过期 Cookie、原文件哈希、两表记录验收已在第 8 组通过。
 
 ## 一致备份
 
@@ -95,7 +98,7 @@ docker compose up -d --wait
 docker compose stop nginx api
 docker compose exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysqldump --user="$MYSQL_USER" --default-character-set=utf8mb4 --single-transaction --no-tablespaces --set-gtid-purged=OFF "$MYSQL_DATABASE"' > "$backup/database.sql"
 docker compose run --rm -T --no-deps --entrypoint tar api -C /data -czf - uploads staging > "$backup/materials.tar.gz"
-# 两个命令都成功后，分别记录文件大小和 SHA-256，并安全保存配置与原 SESSION_SECRET。
+# 两个命令都成功后，分别记录文件大小和 SHA-256，并安全保存配置与原 TOKEN_SECRET。
 Get-FileHash "$backup/database.sql", "$backup/materials.tar.gz" -Algorithm SHA256
 docker compose up -d --wait api nginx
 ```
@@ -104,7 +107,7 @@ docker compose up -d --wait api nginx
 
 ## 恢复到全新隔离项目
 
-先提供与备份匹配的 DB_NAME、DB_USER、DB_PASSWORD、MYSQL_ROOT_PASSWORD、SESSION_SECRET，使用不同入口端口，例如 CAMPUSCLAW_PORT=8081。确认新项目没有需保留的数据，不能向正在使用的旧库覆盖导入。以下新项目名仅是恢复演练示例：
+先提供与备份匹配的 DB_NAME、DB_USER、DB_PASSWORD、MYSQL_ROOT_PASSWORD、TOKEN_SECRET，使用不同入口端口，例如 CAMPUSCLAW_PORT=8081。确认新项目没有需保留的数据，不能向正在使用的旧库覆盖导入。以下新项目名仅是恢复演练示例：
 
 ```powershell
 docker compose -p campusclaw-restore build
@@ -115,7 +118,7 @@ docker compose -p campusclaw-restore run --rm -T --no-deps --volume "${backup}:/
 docker compose -p campusclaw-restore up -d --wait api nginx
 ```
 
-数据库导入与文件恢复都成功后才启动 API 的清理逻辑。验证账号、材料、文件哈希、两表关联及班级隔离；未过期会话只有在原 SESSION_SECRET 和会话表都保留时才可能继续有效，过期不会延长。上述流程已在隔离容器执行：原会话、材料/知识库正文和文件 SHA-256 均匹配；完整三账号矩阵与过期会话已由第 8 组验收通过。
+数据库导入与文件恢复都成功后才启动 API 的清理逻辑。验证账号、材料、文件哈希、两表关联及班级隔离；未过期会话只有在原 TOKEN_SECRET 和会话表都保留时才可能继续有效，过期不会延长。上述流程已在隔离容器执行：原会话、材料/知识库正文和文件 SHA-256 均匹配；完整三账号矩阵与过期会话已由第 8 组验收通过。
 
 本迭代不做生产高可用、SSO、注册找回、问答、聊天、作业流程、并发初始化、持续清理自动重试、分页、配额或上传幂等键。
 

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"io"
@@ -14,36 +13,6 @@ import (
 	"time"
 	"unicode"
 )
-
-type identityKey struct{}
-
-// RequireIdentity ignores client identity fields and loads current account data.
-func (s *Security) RequireIdentity(next http.Handler, teacherOnly bool) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hash := s.cookieHash(r)
-		if hash == nil {
-			securityError(w, 401)
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		var user userIdentity
-		err := s.db.QueryRowContext(ctx, `SELECT u.id,u.username,u.role,u.class_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.session_id_hash=? AND s.expires_at>?`, hash, s.now().UTC()).Scan(&user.ID, &user.Username, &user.Role, &user.ClassID)
-		if errors.Is(err, sql.ErrNoRows) {
-			securityError(w, 401)
-			return
-		}
-		if err != nil {
-			securityError(w, 503)
-			return
-		}
-		if teacherOnly && user.Role != "teacher" {
-			apiError(w, 403, "forbidden", "无权执行此操作")
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, identityKey{}, user)))
-	})
-}
 
 func apiError(w http.ResponseWriter, status int, code, message string) {
 	jsonReply(w, status, map[string]string{"error": code, "message": message})

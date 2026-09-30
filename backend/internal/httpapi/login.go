@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -19,7 +18,6 @@ import (
 	"golang.org/x/crypto/scrypt"
 )
 
-const loginLifetime = 8 * time.Hour
 const loginBodyLimit = 16 * 1024
 
 type loginInput struct{ Username, Password string }
@@ -28,6 +26,15 @@ type userIdentity struct {
 	Username string `json:"username"`
 	Role     string `json:"role"`
 	ClassID  uint64 `json:"class_id"`
+}
+
+// loginReply returns the signed token next to the account it identifies. No
+// session cookie is set: the client stores the token and sends it back in the
+// Authorization header.
+type loginReply struct {
+	User      userIdentity `json:"user"`
+	Token     string       `json:"token"`
+	ExpiresAt string       `json:"expires_at"`
 }
 
 func parseLogin(r *http.Request) (loginInput, bool) {
@@ -104,7 +111,8 @@ func loginError(w http.ResponseWriter, status int) {
 	jsonReply(w, status, map[string]string{"error": code, "message": message})
 }
 
-// login runs after ProtectWrite and rechecks CSRF under the same row lock as replacement.
+// login verifies the password and signs a token. Identity always comes from the
+// account table; any role or class field in the request body is ignored.
 func (s *Security) login(w http.ResponseWriter, r *http.Request) {
 	input, ok := parseLogin(r)
 	if !ok {
@@ -113,35 +121,10 @@ func (s *Security) login(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		securityError(w, 503)
-		return
-	}
-	defer tx.Rollback()
-	hash := s.cookieHash(r)
-	var stored []byte
-	var sessionExpires time.Time
-	var tokenExpires sql.NullTime
-	err = tx.QueryRowContext(ctx, "SELECT csrf_token_hash, csrf_expires_at, expires_at FROM sessions WHERE session_id_hash = ? FOR UPDATE", hash).Scan(&stored, &tokenExpires, &sessionExpires)
-	if errors.Is(err, sql.ErrNoRows) {
-		securityError(w, 403)
-		return
-	}
-	if err != nil {
-		securityError(w, 503)
-		return
-	}
-	token, valid := decodeValue(r.Header.Get("X-CSRF-Token"))
-	digest := sha256.Sum256(token)
-	now := s.now().UTC().Truncate(time.Microsecond)
-	if !valid || !tokenExpires.Valid || !tokenExpires.Time.After(now) || !sessionExpires.After(now) || !hmac.Equal(stored, digest[:]) {
-		securityError(w, 403)
-		return
-	}
 	var user userIdentity
 	var passwordHash string
-	err = tx.QueryRowContext(ctx, "SELECT id, username, role, class_id, password_hash FROM users WHERE username = ? FOR SHARE", input.Username).Scan(&user.ID, &user.Username, &user.Role, &user.ClassID, &passwordHash)
+	err := s.db.QueryRowContext(ctx, "SELECT id,username,role,class_id,password_hash FROM users WHERE username=?", input.Username).
+		Scan(&user.ID, &user.Username, &user.Role, &user.ClassID, &passwordHash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		securityError(w, 503)
 		return
@@ -150,27 +133,10 @@ func (s *Security) login(w http.ResponseWriter, r *http.Request) {
 		loginError(w, 401)
 		return
 	}
-	now = s.now().UTC().Truncate(time.Microsecond)
-	if !sessionExpires.After(now) || !tokenExpires.Time.After(now) {
-		securityError(w, 403)
-		return
-	}
-	id, encodedID := randomValue()
-	expires := now.Add(loginLifetime)
-	_, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE session_id_hash = ?", hash)
-	if err != nil {
+	token, expires := s.issueToken(user, s.now().UTC().Truncate(time.Microsecond))
+	if token == "" {
 		securityError(w, 503)
 		return
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO sessions (session_id_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)", s.digest(id), user.ID, now, expires)
-	if err != nil {
-		securityError(w, 503)
-		return
-	}
-	if err = tx.Commit(); err != nil {
-		securityError(w, 503)
-		return
-	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: encodedID, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil, Expires: expires, MaxAge: 28800})
-	jsonReply(w, 200, map[string]userIdentity{"user": user})
+	jsonReply(w, 200, loginReply{User: user, Token: token, ExpiresAt: expires.Format(time.RFC3339)})
 }

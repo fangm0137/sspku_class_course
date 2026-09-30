@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ApiError, download, forgetToken, read, renewToken, write, type Detail, type Material, type User } from './api';
+import { ApiError, download, forgetToken, read, signIn, write, type Detail, type Material, type User } from './api';
 
 function Mark() { return <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 8h8l2 3 2-3h8v17h-8l-2 2-2-2H6zM16 11v16" /></svg></span>; }
 function FileIcon() { return <span className="file-icon" aria-hidden="true"><svg viewBox="0 0 24 28"><path d="M4 2h10l6 6v18H4zM14 2v7h6M8 14h8M8 19h6" /></svg></span>; }
@@ -53,9 +53,9 @@ export function App() {
     event.preventDefault();
     void act(async () => {
       try {
-        const result = await write<{user: User}>('/api/login', {username, password});
-        setUser(result.user); setKnown(true); setDetail(null); setItems([]); setListed(false);
-        await renewToken();
+        // signIn stores the returned bearer token; every later request reuses it.
+        const current = await signIn(username, password);
+        setUser(current); setKnown(true); setDetail(null); setItems([]); setListed(false);
         await loadList();
       } finally { setPassword(''); }
     });
