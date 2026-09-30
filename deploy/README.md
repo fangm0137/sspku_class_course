@@ -11,6 +11,8 @@
 
 三个服务为 mysql（MySQL 8.0）、api（Go）、nginx（Vite 静态页面及反向代理）。仅 Nginx 绑定 `127.0.0.1:8080`；可用 CAMPUSCLAW_PORT 改端口。MySQL 与 API 不发布宿主机端口。mysql_data 持久化 MySQL 全部数据（账号、班级、材料与知识库；迁移 000002 后不再有会话表）；material_data 挂载 API 的 /data，含 uploads 和 staging。Nginx 不挂载材料卷。
 
+Nginx 对 SPA 外壳 `/` 与 `/index.html` 返回 `Cache-Control: no-cache`（必须回源校验），对内容哈希命名的 `/assets/` 返回 `public, max-age=31536000, immutable`。这样重建前端后浏览器不会继续使用旧的 index.html 与旧 JS；若症状是"重建后页面行为像旧版本"，先用无痕窗口或硬刷新（Ctrl+Shift+R）排除浏览器缓存。
+
 必需环境项为 TOKEN_SECRET、DB_PASSWORD、MYSQL_ROOT_PASSWORD；初始化另需三个 SEED_*_PASSWORD。DB_NAME 和 DB_USER 在 Compose 中默认 campusclaw，DB_USER 必须为非 root 独立应用账号。容器固定 DB_HOST=mysql、DB_PORT=3306、HTTP_ADDR=0.0.0.0:8080、UPLOAD_DIR=/data/uploads；不使用本机开发目录。MYSQL_ROOT_PASSWORD 仅传给 MySQL，API 不获得 root 密码。
 
 从环境或凭据管理工具提供真实值。可交互读入，避免明文出现在命令历史：
