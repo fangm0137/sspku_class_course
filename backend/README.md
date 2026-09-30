@@ -2,7 +2,7 @@
 
 三账号、样本、环境密码输入及初始化顺序见 [验收账号与材料样本](FIXTURES.md)。材料读取与班级隔离见 [MATERIALS.md](MATERIALS.md)，教师上传、事务补偿和恢复见 [UPLOAD.md](UPLOAD.md)，真实证据见 [VERIFY-T5.md](VERIFY-T5.md)。
 
-当前已实现 Go 服务、配置、MySQL 迁移、显式账号及 B 班材料初始化、三个材料样本、health、login、me、logout，以及材料上传、列表、详情和附件下载。认证采用无状态 JWT：登录签发 8 小时 token，受保护接口只认 `Authorization: Bearer`，不再有会话 Cookie 与 CSRF。[React 页面](../frontend/README.md)与 Compose/Nginx 已接入；health 成功不代表业务就绪。启动先在后台执行一次文件恢复，完成前业务 503；恢复失败需人工处理后重启。认证使用见 [AUTH.md](AUTH.md)，token 结构与校验见 [TOKEN.md](TOKEN.md)。
+当前已实现 Go 服务、配置、MySQL 迁移、显式账号及 B 班材料初始化、三个材料样本、health、login、me、logout、材料上传/列表/详情/附件下载，以及**本班知识问答**（上传时按 auto 切分写入 `knowledge_chunks`，`POST /api/ask` 按班检索后生成带 `[1][2]` 出处的回答）。认证采用无状态 JWT：登录签发 8 小时 token，受保护接口只认 `Authorization: Bearer`，不再有会话 Cookie 与 CSRF。检索用 MySQL ngram 全文索引，配置 `EMBEDDING_*` 后自动叠加 Qdrant 向量路径并按 RRF 融合。[React 页面](../frontend/README.md)与 Compose/Nginx 已接入；health 成功不代表业务就绪。启动先在后台执行一次文件恢复，完成前业务 503；恢复失败需人工处理后重启。认证使用见 [AUTH.md](AUTH.md)，token 结构与校验见 [TOKEN.md](TOKEN.md)。
 
 模块当前最低要求 Go 1.26.0（新增依赖要求）；本轮使用 Go 1.27.1 验证，MySQL 驱动固定为 v1.10.1，golang-migrate 为 v4.20.1。在本目录执行：
 

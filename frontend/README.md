@@ -1,6 +1,8 @@
 # CampusClaw 班级资料室
 
-React 18 + TypeScript + Vite 前端。登录后显示本班材料；教师可以上传 TXT/MD，学生只能阅读及下载。页面不提供班级切换、注册、聊天或作业流程。
+React 18 + TypeScript + Vite 前端。登录后显示本班材料；教师可以上传 TXT/MD，学生只能阅读及下载；侧栏「知识问答」可就本班材料提问并给出带 `[1][2]` 出处的简短回答。页面不提供班级切换、注册、聊天或作业流程。
+
+> 知识问答的规约与实测记录见 `openspec/specs/knowledge-qa/spec.md` 与 `openspec/changes/archive/2026-09-30-add-class-scoped-qa/`；本文件只描述前端行为。
 
 ## 本地启动
 

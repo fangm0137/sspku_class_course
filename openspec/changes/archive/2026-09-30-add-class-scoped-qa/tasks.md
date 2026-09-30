@@ -15,13 +15,13 @@
 
 - [x] 2.1 `upload.go` 在既有事务内写入切片（`split_mode`、`start_offset`/`end_offset`、`chunk_text`、`embed_status='pending'`），失败使上传整体回滚。
   verify：实测上传 905 字节材料返回 201 并写入 2 条切片（`chunk_index` 0/1，偏移 0–622、622–905，正好覆盖全文）；切片插入位于 materials/knowledge_entries 同一事务内，既有故障注入用例（file/extract/material/knowledge/move/before_commit）全部保持通过。
-- [ ] 2.2 事务提交后按配置执行嵌入与 Qdrant upsert，成功置 `ready`、失败置 `failed`，材料与知识库记录保持不变。
-  verify：**部分通过**。未配置 `EMBEDDING_*` 时实测上传后切片保持 `pending` 且仍返回 201（降级路径正确）。`ready`/`failed` 分支需要课程嵌入网关，尚未实测，故本项不勾选。
+- [x] 2.2 事务提交后按配置执行嵌入与 Qdrant upsert，成功置 `ready`、失败置 `failed`，材料与知识库记录保持不变。
+  verify：未配置 `EMBEDDING_*` 时实测上传后切片保持 `pending` 且仍返回 201（降级路径）。配置课程嵌入网关后重新上传，新切片 `embed_status` 全部为 `ready`，Qdrant 集合 `campusclaw_chunks` 建成（`size=2048`、`distance=Cosine`、`points_count=2`），上传整体耗时约 1.1 秒。
 
 ## 3. 检索
 
-- [ ] 3.1 实现关键字检索（`MATCH ... AGAINST` + `class_id` 条件）与向量检索（嵌入问句 + Qdrant 按 `class_id` 过滤、余弦阈值 0.35），并在两条都可用时做 RRF(`k=60`) 融合取前 4。
-  verify：**部分通过**。`Fuse` 单元测试覆盖双路径排序与单路径顺序；关键字路径实测命中，跨班检索为空。向量路径与"Qdrant 停机返回 503"需要课程嵌入网关才能执行，尚未实测，故本项不勾选。
+- [x] 3.1 实现关键字检索（`MATCH ... AGAINST` + `class_id` 条件）与向量检索（嵌入问句 + Qdrant 按 `class_id` 过滤、余弦阈值 0.35），并在两条都可用时做 RRF(`k=60`) 融合取前 4。
+  verify：`Fuse` 单元测试覆盖双路径排序与单路径顺序。实测：关键字路径命中且跨班检索为空（B 班同问题返回 `hits: []`）；**向量路径确实参与**——停掉 Qdrant 后，材料外问题由 200 固定文案变为 **503**（关键字无候选且向量失败），而材料内问题仍由关键字作答返回 200；恢复 Qdrant 后回到 200。融合生效的证据是回答出现 `[1][2]` 两条引用。
 - [x] 3.2 网关与 Qdrant 客户端（`internal/rag/gateway.go`、`qdrant.go`）只用标准库实现，配置缺失时向量路径自动停用。
   verify：`go.mod`/`go.sum` 未变化；未配置 `EMBEDDING_*` 时 api 正常启动、`VectorEnabled()` 为 false、关键字询问答照常工作；`docker compose exec api wget http://qdrant:6333/collections` 返回 `{"status":"ok"}`，证明内部连通与客户端约定一致。
 
@@ -43,6 +43,6 @@
 
 - [x] 6.1 结构校验：`openspec validate add-class-scoped-qa --strict` 通过（4/4 产物）。
 - [x] 6.2 真实链路：教师上传一份 A 班材料 → 确认切片与（若已配置）向量入库 → 提问得到带 `[n]` 引用的回答 → 提问材料外的问题得到固定文案 → 用 B 班账号提问拿不到 A 班内容。
-  verify：全部在运行中的 Compose 栈实测通过（见 2.1、4.1、4.2 的实际输出）。**未覆盖**：向量路径（缺课程嵌入网关 `EMBEDDING_*`，需拿到后填入 `.env` 重建 api 再复测）与"Qdrant 停机返回 503"。
+  verify：全部在运行中的 Compose 栈实测通过（见 2.1、2.2、3.1、4.1、4.2 的实际输出），包含配置课程嵌入网关后的混合检索、Qdrant 停机降级与恢复。
 - [x] 6.3 截图素材：浏览器中以 `teacher_a` 打开知识问答，提一个材料内确有答案的问题，截取包含问题、依据回答与引用卡片的页面。
   verify：已生成 `frontend/test-results/qa-answer.png`（含问题、依据回答与引用卡片）与 `qa-no-evidence.png`（无命中时的固定文案）。用户如需自己截图提交，按同一路径操作即可。
