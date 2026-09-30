@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"campusclaw/backend/internal/rag"
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -24,6 +28,8 @@ type uploadStore struct {
 	mu        sync.Mutex
 	fault     func(string) error
 	commit    func(*sql.Tx) error
+	// rag 为 nil 时不做切片嵌入：未配置模型网关的环境仍能正常上传。
+	rag *rag.Service
 }
 
 func newUploadStore(db *sql.DB, directory string) *uploadStore {
@@ -124,6 +130,13 @@ func (s *uploadStore) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := r.Context().Value(identityKey{}).(userIdentity)
+	// 切分是纯计算，放在事务之前：参数或正文不合法时直接失败，不开启事务。
+	chunks, err := rag.Split(input.text, "auto", 0, 0)
+	if err != nil {
+		cleanup()
+		materialBroken(w)
+		return
+	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		cleanup()
@@ -171,6 +184,21 @@ func (s *uploadStore) upload(w http.ResponseWriter, r *http.Request) {
 		abort(uploadDatabaseStatus(err))
 		return
 	}
+	// 切片与材料、知识库记录同事务提交：任一失败都不会留下半成品。
+	chunkIDs := make([]uint64, 0, len(chunks))
+	for _, chunk := range chunks {
+		result, err := tx.ExecContext(r.Context(), "INSERT INTO knowledge_chunks (material_id,class_id,chunk_index,start_offset,end_offset,chunk_text,split_mode) VALUES (?,?,?,?,?,?,'auto')", id, user.ClassID, chunk.Index, chunk.Start, chunk.End, chunk.Text)
+		if err != nil {
+			abort(uploadDatabaseStatus(err))
+			return
+		}
+		chunkID, err := result.LastInsertId()
+		if err != nil {
+			abort(503)
+			return
+		}
+		chunkIDs = append(chunkIDs, uint64(chunkID))
+	}
 	if s.step("move") != nil {
 		abort(500)
 		return
@@ -195,6 +223,19 @@ func (s *uploadStore) upload(w http.ResponseWriter, r *http.Request) {
 		log.Print("upload commit outcome unknown; preserve storage and restart for reconciliation")
 		securityError(w, 503)
 		return
+	}
+	// 嵌入发生在提交之后：网关失败只把切片标成 failed，材料与知识库记录保持有效，
+	// 问答仍可用关键字路径，管理员可以之后再补一次重建。
+	if s.rag != nil && s.rag.VectorEnabled() && len(chunkIDs) > 0 {
+		rows := make([]rag.ChunkRow, len(chunks))
+		for index, chunk := range chunks {
+			rows[index] = rag.ChunkRow{ID: chunkIDs[index], MaterialID: uint64(id), ClassID: user.ClassID, Index: chunk.Index, Text: chunk.Text}
+		}
+		indexContext, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		if indexErr := s.rag.IndexChunks(indexContext, rows); indexErr != nil {
+			log.Print("chunk embedding failed; chunks remain pending for a later rebuild")
+		}
+		cancel()
 	}
 	jsonReply(w, 201, map[string]int64{"material_id": id})
 }

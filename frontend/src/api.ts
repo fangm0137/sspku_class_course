@@ -1,6 +1,12 @@
 export type User = { id: number; username: string; role: 'teacher' | 'student'; class_id: number };
 export type Material = { id: number; title: string; class_id: number; created_at: string };
 export type Detail = Material & { text: string };
+// 引用字段与后端 /api/ask 的响应一一对应：citation 就是回答里的 [n] 序号。
+export type AskCitation = {
+  material_id: number; title: string; chunk_index: number;
+  start_offset: number; end_offset: number; excerpt: string; citation: number;
+};
+export type AskReply = { answer: string; hits: AskCitation[] };
 
 const messages: Record<string, string> = {
   invalid_credentials: '账号或密码错误，请重新输入。',
@@ -63,12 +69,17 @@ export async function read<T>(path: string): Promise<T> {
   catch (error) { if (error instanceof ApiError) throw error; throw new ApiError(0); }
 }
 
-export async function write<T>(path: string, body?: FormData | { username: string; password: string }): Promise<T> {
+export async function write<T>(path: string, body?: FormData | Record<string, unknown>): Promise<T> {
   const form = body instanceof FormData;
   const headers: Record<string, string> = {};
   if (body && !form) headers['Content-Type'] = 'application/json';
   const res = await response(path, { method: 'POST', headers, body: form ? body : body ? JSON.stringify(body) : undefined });
   try { return await res.json(); } catch { throw new ApiError(0); }
+}
+
+// 提问：检索与生成都在服务端完成，浏览器只拿到回答与可回溯的引用。
+export async function ask(question: string): Promise<AskReply> {
+  return write<AskReply>('/api/ask', { question });
 }
 
 // Sign in returns a freshly signed token, which becomes the stored credential.

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"campusclaw/backend/internal/rag"
 )
 
 // Recover performs one pass before business readiness. No automatic retries.
@@ -100,10 +102,11 @@ func (s *uploadStore) removeRecovered(root *os.Root, name string) error {
 }
 
 // NewApplication starts health immediately and gates business on recovery.
-func NewApplication(db *sql.DB, secret, directory string) http.Handler {
+func NewApplication(db *sql.DB, secret, directory string, ragService *rag.Service) http.Handler {
 	store := newUploadStore(db, directory)
+	store.rag = ragService
 	store.ready.Store(false)
-	handler := newHandler(db, secret, store)
+	handler := newHandler(db, secret, store, ragService)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

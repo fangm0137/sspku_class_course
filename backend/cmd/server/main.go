@@ -10,6 +10,7 @@ import (
 	"campusclaw/backend/internal/config"
 	"campusclaw/backend/internal/db"
 	"campusclaw/backend/internal/httpapi"
+	"campusclaw/backend/internal/rag"
 )
 
 func main() {
@@ -30,7 +31,7 @@ func run(getenv func(string) string, serve func(*http.Server) error) error {
 	}
 	defer pool.Close()
 	server := &http.Server{
-		Addr: cfg.HTTPAddr, Handler: httpapi.NewApplication(pool, cfg.TokenSecret, cfg.UploadDir),
+		Addr: cfg.HTTPAddr, Handler: httpapi.NewApplication(pool, cfg.TokenSecret, cfg.UploadDir, rag.New(pool, rag.FromEnv(getenv))),
 		ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	if err := serve(server); err != nil && !errors.Is(err, http.ErrServerClosed) {
