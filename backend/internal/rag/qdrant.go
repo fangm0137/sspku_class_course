@@ -84,16 +84,20 @@ func (q *Qdrant) Upsert(ctx context.Context, points []vectorPoint) error {
 	return nil
 }
 
-// Search 按班级过滤后做余弦检索。班级条件写在 Qdrant 的 filter 里，
-// 与 MySQL 侧的条件互为双保险。
-func (q *Qdrant) Search(ctx context.Context, vector []float32, classID uint64, limit int) ([]scoredPoint, error) {
+// Search 按班级过滤后做余弦检索；materialIDs 非空时进一步限定在这些材料内
+// （智能体绑定的材料）。两个条件都写在 Qdrant 的 filter 里，与 MySQL 侧互为双保险。
+func (q *Qdrant) Search(ctx context.Context, vector []float32, classID uint64, materialIDs []uint64, limit int) ([]scoredPoint, error) {
+	must := []map[string]any{{"key": "class_id", "match": map[string]any{"value": classID}}}
+	if len(materialIDs) > 0 {
+		scope := make([]uint64, len(materialIDs))
+		copy(scope, materialIDs)
+		must = append(must, map[string]any{"key": "material_id", "match": map[string]any{"any": scope}})
+	}
 	body, err := json.Marshal(map[string]any{
 		"query":        vector,
 		"limit":        limit,
 		"with_payload": false,
-		"filter": map[string]any{
-			"must": []map[string]any{{"key": "class_id", "match": map[string]any{"value": classID}}},
-		},
+		"filter":       map[string]any{"must": must},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode query", ErrDependency)

@@ -17,13 +17,19 @@ import (
 var ErrDependency = errors.New("rag dependency unavailable")
 
 // Gateway 是 OpenAI 兼容的课程模型网关客户端。密钥只存在于服务端进程环境。
+// 两个客户端分开持有超时：普通调用有总超时，流式调用交给请求上下文（可能生成很久）。
 type Gateway struct {
 	config Config
 	client *http.Client
+	stream *http.Client
 }
 
 func newGateway(config Config) *Gateway {
-	return &Gateway{config: config, client: &http.Client{Timeout: 60 * time.Second}}
+	return &Gateway{
+		config: config,
+		client: &http.Client{Timeout: 60 * time.Second},
+		stream: &http.Client{},
+	}
 }
 
 // VectorEnabled 表示嵌入配置齐全，可以使用向量路径。

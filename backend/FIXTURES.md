@@ -51,6 +51,8 @@ go run ./cmd/seed
 if ($LASTEXITCODE -ne 0) { throw '账号初始化失败，停止初始化' }
 go run ./cmd/seed-materials
 if ($LASTEXITCODE -ne 0) { throw '材料初始化失败' }
+go run ./cmd/seed-skills
+if ($LASTEXITCODE -ne 0) { throw '技能初始化失败' }
 ```
 
 | 命令 | 所需环境 | 首次预期输出 | 正常串行重跑 |
@@ -58,8 +60,11 @@ if ($LASTEXITCODE -ne 0) { throw '材料初始化失败' }
 | go run ./cmd/migrate up | 五个 DB_* | migrations applied | no change |
 | go run ./cmd/seed | DB_*、三个 SEED_*_PASSWORD | accounts initialized | no change |
 | go run ./cmd/seed-materials | DB_*、绝对 UPLOAD_DIR | material seed initialized | no change |
+| go run ./cmd/seed-skills | 五个 DB_* | skill seed initialized | no change |
 
-以上三条命令都不需要 TOKEN_SECRET，不会启动 HTTP 服务。首次对空库执行完成后，应有 2 个班级、3 个账号、1 条 B 班材料和其唯一知识库记录；原文件在 UPLOAD_DIR/seed-class-b-v1.txt。初始化不创建登录会话，也不创建 A 班材料。既有数据库可能有其他数据，不能把这些数量当作清空数据库的理由。
+以上四条命令都不需要 TOKEN_SECRET，不会启动 HTTP 服务。`seed-skills` 依赖 `seed` 建好的唯一 A 班，**不能提前执行**；它把 `fixtures/skills/` 下的数学、语文两份技能写入 A 班，幂等键是 `seed_key`，所以重跑只核对不改写——教师改过的技能与样板不一致时报冲突，而不是被种子作业覆盖。
+
+首次对空库执行完成后，应有 2 个班级、3 个账号、1 条 B 班材料和其唯一知识库记录、2 条 A 班技能；原文件在 UPLOAD_DIR/seed-class-b-v1.txt。初始化不创建登录会话、不创建 A 班材料，也不创建智能体与会话。既有数据库可能有其他数据，不能把这些数量当作清空数据库的理由。
 
 验证重复执行时保留相同数据库和 UPLOAD_DIR，按相同顺序串行重跑。账号密码必须仍全部提供；即使提供新密码，也不会重置已有密码。班级/角色冲突、B 班不唯一、材料或原文件不一致时报错，不覆盖已有数据。失败或中断后的遗留文件需要人工核实；不提供并发初始化、种子中断补偿或自动修复。请勿通过删库或删文件强行取得成功输出。
 

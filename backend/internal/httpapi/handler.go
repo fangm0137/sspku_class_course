@@ -6,8 +6,23 @@ import (
 	"net/http"
 	"os"
 
+	"campusclaw/backend/internal/chat"
 	"campusclaw/backend/internal/rag"
 )
+
+// route 是路由表的一行。它同时是两件事的唯一来源：
+//   - 注册到 ServeMux 的全部业务路由；
+//   - GET /openapi.yaml 的漂移测试比对依据（见 openapi_test.go）。
+//
+// 这样"文档写了但代码没有""代码有但文档没写"都会在测试里直接失败，
+// 不需要靠人工同步两份清单。
+type route struct {
+	Method  string
+	Path    string
+	Teacher bool
+	Public  bool
+	Handler http.HandlerFunc
+}
 
 // Health does not touch the account database, even when it is unavailable.
 func NewHandler(db *sql.DB, secret string, uploadDirectories ...string) http.Handler {
@@ -18,10 +33,10 @@ func NewHandler(db *sql.DB, secret string, uploadDirectories ...string) http.Han
 	return newHandler(db, secret, newUploadStore(db, directory), rag.New(db, rag.FromEnv(os.Getenv)))
 }
 
-// newHandler wires every route behind bearer token authentication. Only login
-// and the liveness probe stay anonymous; GET /api/csrf is intentionally gone,
-// so unknown API paths fall through to a plain 404. ragService 允许为空，
-// 此时问答按依赖不可用处理，其余接口不受影响。
+// newHandler wires every route behind bearer token authentication. Only login,
+// the liveness probe and the API description stay anonymous; GET /api/csrf is
+// intentionally gone, so unknown API paths fall through to a plain 404.
+// ragService 允许为空，此时检索与问答按依赖不可用处理，其余接口不受影响。
 func newHandler(db *sql.DB, secret string, store *uploadStore, ragServices ...*rag.Service) http.Handler {
 	ragService := (*rag.Service)(nil)
 	if len(ragServices) > 0 {
@@ -33,27 +48,108 @@ func newHandler(db *sql.DB, secret string, store *uploadStore, ragServices ...*r
 	ask := askHandler{service: ragService}
 	search := searchHandler{service: ragService}
 	reindex := reindexHandler{service: ragService}
-	mux.Handle("POST /api/ask", security.RequireIdentity(http.HandlerFunc(ask.ask), false))
-	mux.Handle("GET /api/search", security.RequireIdentity(http.HandlerFunc(search.search), false))
-	mux.Handle("POST /api/materials", security.RequireIdentity(http.HandlerFunc(store.upload), true))
-	mux.Handle("POST /api/materials/{id}/reindex", security.RequireIdentity(http.HandlerFunc(reindex.reindex), true))
-	mux.Handle("GET /api/materials", security.RequireIdentity(http.HandlerFunc(materials.list), false))
-	mux.Handle("GET /api/materials/{id}", security.RequireIdentity(http.HandlerFunc(materials.detail), false))
-	mux.Handle("GET /api/materials/{id}/file", security.RequireIdentity(http.HandlerFunc(materials.file), false))
+	// 第 5 课：智能体、技能、会话与流式回答。db 为空（单元测试）时这些接口按依赖不可用处理。
+	var (
+		agents        agentsHandler
+		skillsH       skillsHandler
+		conversations conversationsHandler
+		answer        answerHandler
+	)
+	if db != nil {
+		chatService := chat.New(db, ragService)
+		agents.store = chatService.Agents()
+		skillsH.store = chatService.Skills()
+		conversations.chats = chatService.Conversations()
+		conversations.agents = chatService.Agents()
+		answer.service = chatService
+	}
+	for _, item := range routeTable(routeHandlers{
+		upload: store.upload, materials: materials, ask: ask, search: search, reindex: reindex,
+		agents: agents, skills: skillsH, conversations: conversations, answer: answer,
+		security: security,
+	}) {
+		if item.Public {
+			mux.HandleFunc(item.Method+" "+item.Path, item.Handler)
+			continue
+		}
+		mux.Handle(item.Method+" "+item.Path, security.RequireIdentity(item.Handler, item.Teacher))
+	}
+	// 兜底：未匹配的路径（含被移除的 /api/csrf）一律返回 404，与"资源不存在"同形。
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { materialNotFound(w) })
-	mux.Handle("POST /api/login", http.HandlerFunc(security.login))
-	mux.Handle("GET /api/me", security.RequireIdentity(http.HandlerFunc(security.me), false))
-	mux.Handle("POST /api/logout", security.RequireIdentity(http.HandlerFunc(security.logout), false))
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"status":"ok"}`)
-	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" && !store.ready.Load() {
+		// /health 与接口文档不参与业务就绪门禁：前者只代表进程活着，
+		// 后者是让使用者能看到有哪些接口，都不该在恢复期间一起 503。
+		if r.URL.Path != "/health" && r.URL.Path != openAPIPath && !store.ready.Load() {
 			securityError(w, 503)
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// routeHandlers 把各处理器打包传入，避免 routeTable 的签名过长。
+type routeHandlers struct {
+	upload        http.HandlerFunc
+	materials     materialReader
+	ask           askHandler
+	search        searchHandler
+	reindex       reindexHandler
+	agents        agentsHandler
+	skills        skillsHandler
+	conversations conversationsHandler
+	answer        answerHandler
+	security      *Security
+}
+
+// routeTable 声明全部路由。顺序即 /openapi.yaml 的书写顺序，便于对照。
+func routeTable(h routeHandlers) []route {
+	authenticated := func(method, path string, handler http.HandlerFunc) route {
+		return route{Method: method, Path: path, Handler: handler}
+	}
+	teacherOnly := func(method, path string, handler http.HandlerFunc) route {
+		return route{Method: method, Path: path, Teacher: true, Handler: handler}
+	}
+	anonymous := func(method, path string, handler http.HandlerFunc) route {
+		return route{Method: method, Path: path, Public: true, Handler: handler}
+	}
+	return []route{
+		anonymous("POST", "/api/login", h.security.login),
+		authenticated("GET", "/api/me", h.security.me),
+		authenticated("POST", "/api/logout", h.security.logout),
+
+		teacherOnly("POST", "/api/materials", h.upload),
+		authenticated("GET", "/api/materials", h.materials.list),
+		authenticated("GET", "/api/materials/{id}", h.materials.detail),
+		authenticated("GET", "/api/materials/{id}/file", h.materials.file),
+		teacherOnly("POST", "/api/materials/{id}/reindex", h.reindex.reindex),
+
+		authenticated("GET", "/api/search", h.search.search),
+		authenticated("POST", "/api/ask", h.ask.ask),
+
+		teacherOnly("POST", "/api/agents", h.agents.create),
+		authenticated("GET", "/api/agents", h.agents.list),
+		authenticated("GET", "/api/agents/{id}", h.agents.get),
+		teacherOnly("PUT", "/api/agents/{id}", h.agents.update),
+		teacherOnly("DELETE", "/api/agents/{id}", h.agents.remove),
+		teacherOnly("PUT", "/api/agents/{id}/skills", h.agents.replaceSkills),
+		teacherOnly("PUT", "/api/agents/{id}/materials", h.agents.replaceMaterials),
+
+		teacherOnly("POST", "/api/skills", h.skills.create),
+		authenticated("GET", "/api/skills", h.skills.list),
+		authenticated("GET", "/api/skills/{id}", h.skills.get),
+		teacherOnly("PUT", "/api/skills/{id}", h.skills.update),
+		teacherOnly("DELETE", "/api/skills/{id}", h.skills.remove),
+
+		authenticated("GET", "/api/conversations", h.conversations.list),
+		authenticated("POST", "/api/conversations", h.conversations.create),
+		authenticated("GET", "/api/conversations/{id}", h.conversations.get),
+		authenticated("POST", "/api/conversations/{id}/messages", h.answer.stream),
+
+		anonymous("GET", openAPIPath, serveOpenAPI),
+		anonymous("GET", "/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"status":"ok"}`)
+		}),
+	}
 }

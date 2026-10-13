@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CampusClaw API 文档</title>
+<link rel="stylesheet" href="./swagger-ui.css">
+<link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png">
+<style>
+  body { margin: 0; background: #fafaf5; }
+  .swagger-ui .topbar { background-color: #214f3f; }
+  .swagger-ui .topbar .download-url-wrapper { display: none; }
+  #notice {
+    font: 13px/1.7 "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #4b625a; background: #ffffff; border-bottom: 1px solid #e0e6dc;
+    padding: 12px 24px;
+  }
+  #notice code { background: #f2f4ee; border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<div id="notice">
+  文档来自服务端内嵌的 <code>/openapi.yaml</code>，与路由表逐条比对，不会各自漂移。
+  <strong>试调说明：</strong>先在本站的登录页正常登录一次，本页会自动复用浏览器里已保存的令牌；
+  也可以在右上角 <em>Authorize</em> 里手动粘贴令牌。未带令牌的受保护接口会返回 401。
+</div>
+<div id="swagger-ui"></div>
+<script src="./swagger-ui-bundle.js" crossorigin></script>
+<script>
+  // 复用应用自身的令牌键：调用方不必在文档页再贴一次。
+  var tokenKey = 'campusclaw_token';
+  function currentToken() {
+    try { return localStorage.getItem(tokenKey) || ''; } catch (error) { return ''; }
+  }
+  window.ui = SwaggerUIBundle({
+    url: '/openapi.yaml',
+    dom_id: '#swagger-ui',
+    deepLinking: true,
+    docExpansion: 'list',
+    defaultModelsExpandDepth: 0,
+    tryItOutEnabled: true,
+    requestInterceptor: function (request) {
+      var token = currentToken();
+      if (token && !request.headers.Authorization) {
+        request.headers.Authorization = 'Bearer ' + token;
+      }
+      return request;
+    },
+    presets: [SwaggerUIBundle.presets.apis],
+    layout: 'BaseLayout'
+  });
+</script>
+</body>
+</html>

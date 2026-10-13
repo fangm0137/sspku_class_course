@@ -1,0 +1,649 @@
+openapi: 3.0.3
+info:
+  title: CampusClaw API
+  version: "5.0"
+  description: |
+    班级资料室的 HTTP 接口。认证为无状态 JWT：除 /api/login、/health 与
+    本文档自身外，所有接口都要带 `Authorization: Bearer <token>`。
+
+    班级一律取自令牌对应用户的账号记录，请求里不出现班级参数；
+    跨班访问在读取类接口上表现为 404 或空结果，不额外泄露存在性。
+
+    本文件在测试中与 internal/httpapi 的路由表逐条比对（见 openapi_test.go），
+    因此"代码有而文档没有"或"文档有而代码没有"都会让测试失败。
+servers:
+  - url: /
+    description: 与页面同源（Nginx 反向代理到 API）
+tags:
+  - name: auth
+    description: 登录与身份
+  - name: materials
+    description: 教学材料与检索索引
+  - name: retrieval
+    description: 知识库检索与问答
+  - name: agents
+    description: 智能体与其技能、材料绑定
+  - name: skills
+    description: 学科技能（由文本文件定义）
+  - name: conversations
+    description: 会话与流式回答
+  - name: system
+    description: 健康检查与接口文档
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        message: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        username: { type: string }
+        role: { type: string, enum: [teacher, student] }
+        class_id: { type: integer, format: int64 }
+    LoginResult:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        token: { type: string, description: HS256 签名的 JWT，有效期 8 小时 }
+        expires_at: { type: string, format: date-time }
+    Material:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string }
+        class_id: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+    SearchHit:
+      type: object
+      properties:
+        material_id: { type: integer, format: int64 }
+        title: { type: string }
+        chunk_id: { type: integer, format: int64 }
+        chunk_index: { type: integer }
+        char_start: { type: integer, description: 相对预处理后正文的字节偏移 }
+        char_end: { type: integer }
+        excerpt: { type: string }
+        score: { type: number, format: double, description: 本次模式下的排序分，跨模式不可比较 }
+    AskCitation:
+      type: object
+      properties:
+        material_id: { type: integer, format: int64 }
+        title: { type: string }
+        chunk_id: { type: integer, format: int64 }
+        chunk_index: { type: integer }
+        char_start: { type: integer }
+        char_end: { type: integer }
+        excerpt: { type: string }
+        citation: { type: integer, description: 与回答里的 [n] 同序 }
+    Agent:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, description: 班内唯一，不超过 64 字 }
+        prompt: { type: string, description: 留空时回退到服务端默认角色设定 }
+        enabled: { type: boolean }
+        skill_ids: { type: array, items: { type: integer, format: int64 } }
+        material_ids: { type: array, items: { type: integer, format: int64 } }
+    Skill:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        trigger_text: { type: string, description: 按分隔符切词后与提问做子串匹配 }
+        description: { type: string }
+        subject_text: { type: string, description: 资料范围；命中该词的技能只在标题含该词的材料内检索 }
+        tools: { type: array, items: { type: string, enum: [knowledge_search] } }
+        enabled: { type: boolean }
+    Conversation:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string, description: 首轮提问的前 24 字 }
+        agent_id: { type: integer, format: int64 }
+        updated_at: { type: string, format: date-time }
+    Message:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        role: { type: string, enum: [user, assistant] }
+        content: { type: string }
+        citations:
+          type: array
+          items: { $ref: '#/components/schemas/AskCitation' }
+        skill_name: { type: string, description: 本次命中的技能名；未命中时省略 }
+        created_at: { type: string, format: date-time }
+security:
+  - bearerAuth: []
+paths:
+  /api/login:
+    post:
+      tags: [auth]
+      summary: 登录并签发令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResult' }
+        '400': { description: 请求体不合法, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { description: 账号或密码错误, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: 数据库不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/me:
+    get:
+      tags: [auth]
+      summary: 读取当前账号
+      responses:
+        '200':
+          description: 当前账号
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { description: 缺少或无效令牌, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: 服务不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/logout:
+    post:
+      tags: [auth]
+      summary: 登出（客户端丢弃令牌）
+      description: 令牌无状态，本接口只确认令牌有效；服务端不保存可撤销记录。
+      responses:
+        '200':
+          description: 已登出
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '401': { description: 缺少或无效令牌, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/materials:
+    get:
+      tags: [materials]
+      summary: 列出本班材料
+      responses:
+        '200':
+          description: 本班材料
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Material' } }
+        '401': { description: 未登录, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    post:
+      tags: [materials]
+      summary: 上传材料（仅教师）
+      description: 上传即切分并写入 knowledge_chunks；配置了嵌入网关时随后写入向量库。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: 上传成功
+          content:
+            application/json:
+              schema: { type: object, properties: { material_id: { type: integer, format: int64 } } }
+        '401': { description: 未登录, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '403': { description: 学生账号, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '413': { description: 文件超过大小限制, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/materials/{id}:
+    get:
+      tags: [materials]
+      summary: 读取材料正文
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 材料详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Material'
+                  - type: object
+                    properties: { text: { type: string } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/materials/{id}/file:
+    get:
+      tags: [materials]
+      summary: 下载材料原文件
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200': { description: 原文件字节流, content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/materials/{id}/reindex:
+    post:
+      tags: [materials]
+      summary: 按指定策略重建检索索引（仅教师）
+      description: 先删除该材料的旧切片与旧向量，再按本次策略重新切分；正文与材料记录不被改写。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                strategy: { type: string, enum: [auto, custom, hierarchy], default: auto }
+                size: { type: integer, description: 仅 custom 生效，100–2000 }
+                overlap: { type: integer, description: 仅 custom 生效，不超过 size 的一半 }
+                remove_urls: { type: boolean }
+                remove_emails: { type: boolean }
+                collapse_whitespace: { type: boolean }
+      responses:
+        '200':
+          description: 重建完成
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  material_id: { type: integer, format: int64 }
+                  strategy: { type: string }
+                  chunks: { type: integer }
+        '403': { description: 学生账号, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/search:
+    get:
+      tags: [retrieval]
+      summary: 检索本班知识库
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+        - { name: mode, in: query, schema: { type: string, enum: [keyword, vector, hybrid], default: hybrid } }
+        - { name: limit, in: query, schema: { type: integer, default: 4, maximum: 20 } }
+      responses:
+        '200':
+          description: 命中列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode: { type: string }
+                  hits: { type: array, items: { $ref: '#/components/schemas/SearchHit' } }
+        '400': { description: 空查询或非法模式, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: 在用的检索路径依赖不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/ask:
+    post:
+      tags: [retrieval]
+      summary: 依据知识库回答一次问题
+      description: 命中的切片交给对话网关生成简短回答并要求标出 [n]；没有命中时直接返回固定文案且不调用模型。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties: { question: { type: string } }
+      responses:
+        '200':
+          description: 回答与可回溯的引用
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer: { type: string }
+                  hits: { type: array, items: { $ref: '#/components/schemas/AskCitation' } }
+        '400': { description: 问题为空, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: 对话网关不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/agents:
+    get:
+      tags: [agents]
+      summary: 列出本班智能体
+      description: 学生视角只返回已启用的；教师加 ?all=1 可看到停用的。
+      parameters:
+        - { name: all, in: query, schema: { type: string, enum: ['1'] } }
+      responses:
+        '200':
+          description: 智能体列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Agent' } }
+    post:
+      tags: [agents]
+      summary: 新建智能体（仅教师）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64 }
+                prompt: { type: string, maxLength: 2000 }
+                enabled: { type: boolean, default: true }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer, format: int64 } } }
+        '400': { description: 名称为空、超长或班内重名, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/agents/{id}:
+    get:
+      tags: [agents]
+      summary: 读取单个智能体
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 智能体详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Agent' }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    put:
+      tags: [agents]
+      summary: 修改智能体（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 64 }
+                prompt: { type: string, maxLength: 2000 }
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '400': { description: 字段不合规, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      tags: [agents]
+      summary: 删除智能体（仅教师）
+      description: 该智能体名下的会话与消息随删除一并清理。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/agents/{id}/skills:
+    put:
+      tags: [agents]
+      summary: 整体替换智能体绑定的技能（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [skill_ids]
+              properties:
+                skill_ids: { type: array, items: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '404': { description: 智能体或某个技能不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/agents/{id}/materials:
+    put:
+      tags: [agents]
+      summary: 整体替换智能体绑定的材料（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [material_ids]
+              properties:
+                material_ids: { type: array, items: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '404': { description: 智能体或某份材料不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/skills:
+    get:
+      tags: [skills]
+      summary: 列出本班技能
+      responses:
+        '200':
+          description: 技能列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Skill' } }
+    post:
+      tags: [skills]
+      summary: 新建技能（仅教师）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_text]
+              properties:
+                source_text:
+                  type: string
+                  description: |
+                    技能文件全文。空行以上为元数据键行（名称、适用条件、资料、工具、启用），
+                    空行以下为引导规程。解析失败返回 400 并带行号。
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer, format: int64 } } }
+        '400': { description: 文件解析失败或班内重名, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/skills/{id}:
+    get:
+      tags: [skills]
+      summary: 读取技能（含原文）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 技能与原文
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skill: { $ref: '#/components/schemas/Skill' }
+                  source_text: { type: string }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    put:
+      tags: [skills]
+      summary: 用新原文整体替换技能（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_text]
+              properties: { source_text: { type: string } }
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '400': { description: 文件解析失败或班内重名, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      tags: [skills]
+      summary: 删除技能（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/conversations:
+    get:
+      tags: [conversations]
+      summary: 列出本人的会话
+      responses:
+        '200':
+          description: 会话列表，按更新时间倒序
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Conversation' } }
+    post:
+      tags: [conversations]
+      summary: 新建会话并选定智能体
+      description: 会话一旦建立，所选智能体即锁定；要换智能体需新建会话。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_id]
+              properties: { agent_id: { type: integer, format: int64 } }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer, format: int64 }
+                  title: { type: string }
+        '400': { description: 本班没有已启用的智能体, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 所选智能体不存在、他班或已停用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/conversations/{id}:
+    get:
+      tags: [conversations]
+      summary: 读取会话及其全部消息
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 会话与消息
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Conversation'
+                  - type: object
+                    properties:
+                      messages: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        '404': { description: 会话不存在或不属于当前账号, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/conversations/{id}/messages:
+    post:
+      tags: [conversations]
+      summary: 提问并以 SSE 流式接收回答
+      description: |
+        响应为 text/event-stream，事件顺序固定：
+
+        - `meta`：检索完成、开始生成前发出，携带本次的引用列表（可能为空数组）与命中的技能名；
+        - `delta`：增量文本（不是累计全文），出现 0 次或多次；
+        - `done`：助手消息编号；
+        - `error`：流开始后发生的失败，用它收尾。
+
+        流一旦开始，状态码不可再变更；只有建立流之前可判定的失败才返回 4xx/5xx。
+        没有检索到资料时**仍然调用模型**按角色作答，此时引用为空且正文不带编号。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties: { question: { type: string, description: 2–500 字 } }
+      responses:
+        '200':
+          description: SSE 流
+          content:
+            text/event-stream:
+              schema: { type: string }
+              example: |
+                event: meta
+                data: {"status":"ok","conversation_id":1,"user_message_id":2,"skill":{"name":"数学解题引导"},"citations":[{"material_id":5,"title":"小学科学课程资料.md","chunk_id":12,"chunk_index":1,"char_start":622,"char_end":905}]}
+
+                event: delta
+                data: {"text":"先检查一下"}
+
+                event: done
+                data: {"assistant_message_id":3}
+        '400': { description: 提问为空或超长, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 会话不存在或不属于当前账号, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: 检索或对话网关不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /health:
+    get:
+      tags: [system]
+      summary: 存活探针
+      description: 不访问数据库、文件或令牌；返回 200 只代表进程在运行，不代表业务就绪。
+      security: []
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema: { type: object, properties: { status: { type: string, enum: [ok] } } }
+  /openapi.yaml:
+    get:
+      tags: [system]
+      summary: 本接口文档
+      security: []
+      responses:
+        '200': { description: OpenAPI 文档, content: { application/yaml: { schema: { type: string } } } }

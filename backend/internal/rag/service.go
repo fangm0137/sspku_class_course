@@ -317,31 +317,45 @@ func (s *Service) RebuildIndex(ctx context.Context, materialID, classID uint64, 
 	return len(chunks), nil
 }
 
+// SearchOptions 限定一次检索：模式、条数，以及可选的"只在这些材料内检索"范围。
+// MaterialIDs 为空表示不限制材料（第 4 课的班级范围检索）；非空时两条路径都会带上它。
+type SearchOptions struct {
+	Mode        string
+	Limit       int
+	MaterialIDs []uint64
+}
+
+// Search 按班级与可选的材料范围检索。strict 语义与 SearchMode 一致。
+func (s *Service) Search(ctx context.Context, classID uint64, question string, options SearchOptions) ([]Hit, error) {
+	return s.searchScoped(ctx, classID, question, options, true)
+}
+
 // SearchMode 是检索接口使用的严格语义：keyword 只走全文索引；vector 需要嵌入网关
 // 与向量库；hybrid 同时执行两条路径并按名次融合。任一路径的依赖故障都如实上报 503，
 // 不把故障说成"资料里没有"，也不用单侧结果冒充混合结果。
 func (s *Service) SearchMode(ctx context.Context, classID uint64, question, mode string, limit int) ([]Hit, error) {
-	return s.search(ctx, classID, question, mode, limit, true)
+	return s.searchScoped(ctx, classID, question, SearchOptions{Mode: mode, Limit: limit}, true)
 }
 
-// search 是检索与问答共用的实现。strict 为 true 时任何在用路径的依赖故障都上报 503；
+// searchScoped 是检索与问答共用的实现。strict 为 true 时任何在用路径的依赖故障都上报 503；
 // 为 false 时按问答规约降级：向量路径未配置即自动停用，配置了但故障时只要关键字
 // 已有候选就继续据此作答，只有两条路径都拿不到候选时才上报依赖不可用。
-func (s *Service) search(ctx context.Context, classID uint64, question, mode string, limit int, strict bool) ([]Hit, error) {
+func (s *Service) searchScoped(ctx context.Context, classID uint64, question string, options SearchOptions, strict bool) ([]Hit, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrDependency
 	}
-	mode = NormalizeMode(mode)
+	mode := NormalizeMode(options.Mode)
 	if !ValidMode(mode) {
 		return nil, ErrInvalidMode
 	}
+	limit := options.Limit
 	if limit <= 0 || limit > SearchMaxLimit {
 		limit = SearchDefaultLimit
 	}
 	paths := make([][]Candidate, 0, 2)
 	keywordHits := 0
 	if mode == ModeKeyword || mode == ModeHybrid {
-		keyword, err := s.keyword(ctx, classID, question, keywordLimit)
+		keyword, err := s.keyword(ctx, classID, question, keywordLimit, options.MaterialIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -349,7 +363,7 @@ func (s *Service) search(ctx context.Context, classID uint64, question, mode str
 		paths = append(paths, keyword)
 	}
 	if mode == ModeVector || mode == ModeHybrid {
-		vector, err := s.vectorPath(ctx, classID, question, strict, keywordHits > 0)
+		vector, err := s.vectorPath(ctx, classID, question, options.MaterialIDs, strict, keywordHits > 0)
 		if err != nil {
 			return nil, err
 		}
@@ -372,15 +386,20 @@ func (s *Service) search(ctx context.Context, classID uint64, question, mode str
 	return s.hydrate(ctx, classID, ordered)
 }
 
+// search 保留给问答接口使用（可降级语义）。
+func (s *Service) search(ctx context.Context, classID uint64, question, mode string, limit int, strict bool) ([]Hit, error) {
+	return s.searchScoped(ctx, classID, question, SearchOptions{Mode: mode, Limit: limit}, strict)
+}
+
 // vectorPath 返回 nil, nil 表示该路径被降级规则跳过（不是故障）。
-func (s *Service) vectorPath(ctx context.Context, classID uint64, question string, strict, keywordHasHits bool) ([]Candidate, error) {
+func (s *Service) vectorPath(ctx context.Context, classID uint64, question string, materialIDs []uint64, strict, keywordHasHits bool) ([]Candidate, error) {
 	if !s.VectorEnabled() {
 		if strict {
 			return nil, ErrDependency
 		}
 		return nil, nil
 	}
-	candidates, err := s.vector(ctx, classID, question, vectorLimit)
+	candidates, err := s.vector(ctx, classID, question, materialIDs, vectorLimit)
 	if err != nil {
 		if strict || !keywordHasHits {
 			return nil, err
@@ -409,16 +428,25 @@ func (s *Service) Ask(ctx context.Context, classID uint64, question string) (str
 	return answer, hits, nil
 }
 
-// keyword 用 MySQL 8.0 的 ngram 全文索引检索。班级条件与索引状态都写在 SQL 里，
-// 因此这条路径不依赖向量库，也不需要调用任何模型网关。
-func (s *Service) keyword(ctx context.Context, classID uint64, question string, limit int) ([]Candidate, error) {
-	const query = `SELECT c.id, MATCH(c.chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE) AS relevance
+// keyword 用 MySQL 8.0 的 ngram 全文索引检索。班级条件、索引状态与可选的绑定材料范围
+// 都写在 SQL 里，因此这条路径不依赖向量库，也不需要调用任何模型网关。
+func (s *Service) keyword(ctx context.Context, classID uint64, question string, limit int, materialIDs []uint64) ([]Candidate, error) {
+	query := `SELECT c.id, MATCH(c.chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE) AS relevance
 FROM knowledge_chunks c
 WHERE c.class_id = ? AND c.index_status = 'ready'
-  AND MATCH(c.chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE) > 0
-ORDER BY relevance DESC, c.id ASC
-LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, query, question, classID, question, limit)
+  AND MATCH(c.chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE) > 0`
+	args := []any{question, classID, question}
+	if len(materialIDs) > 0 {
+		placeholders := make([]string, len(materialIDs))
+		for index, id := range materialIDs {
+			placeholders[index] = "?"
+			args = append(args, id)
+		}
+		query += " AND c.material_id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	query += " ORDER BY relevance DESC, c.id ASC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -434,12 +462,12 @@ LIMIT ?`
 	return candidates, rows.Err()
 }
 
-func (s *Service) vector(ctx context.Context, classID uint64, question string, limit int) ([]Candidate, error) {
+func (s *Service) vector(ctx context.Context, classID uint64, question string, materialIDs []uint64, limit int) ([]Candidate, error) {
 	vectors, err := s.gateway.Embed(ctx, []string{question})
 	if err != nil {
 		return nil, err
 	}
-	points, err := s.vectors.Search(ctx, vectors[0], classID, limit)
+	points, err := s.vectors.Search(ctx, vectors[0], classID, materialIDs, limit)
 	if err != nil {
 		return nil, err
 	}

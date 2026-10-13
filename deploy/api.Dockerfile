@@ -7,6 +7,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/server ./cmd/server && \
     CGO_ENABLED=0 go build -trimpath -o /out/migrate ./cmd/migrate && \
     CGO_ENABLED=0 go build -trimpath -o /out/seed ./cmd/seed && \
     CGO_ENABLED=0 go build -trimpath -o /out/seed-materials ./cmd/seed-materials && \
+    CGO_ENABLED=0 go build -trimpath -o /out/seed-skills ./cmd/seed-skills && \
     CGO_ENABLED=0 go build -trimpath -o /out/reindex ./cmd/reindex
 
 FROM alpine:3.22

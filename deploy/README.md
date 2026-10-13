@@ -4,6 +4,8 @@
 
 > **变更提示（switch-auth-to-jwt-token）**：认证已由 Cookie 会话改为无状态 JWT，环境项 `SESSION_SECRET` 更名为 `TOKEN_SECRET`（作 HS256 签名密钥），迁移新增 `000002_drop_sessions`，`sessions` 表随之删除。Compose 与 `verify-config.ps1` / `verify-proxy.ps1` 的配置校验已同步改名。
 > `verify-e2e.ps1` 中与登录 Cookie、`X-CSRF-Token`、会话表相关的断言仍描述第 3 课方案，尚未按 token 契约重写；`VERIFY-T7.md`、`VERIFY-T8.md`、`SCENARIO-EVIDENCE.md` 是当时的验收记录，不随本次变更改写。以 token 契约重跑完整部署矩阵属于后续待办。
+>
+> **变更提示（add-agent-skills-and-streaming-qa，第 5 课）**：迁移新增 `000005`（六张表），镜像新增 `seed-skills` 二进制与 `/swagger/` 静态目录，Compose 初始化顺序多一步 `seed-skills`（必须在 `seed` 之后）。Nginx 新增一条正则 location 承载 SSE。
 
 ## 前提与配置
 
@@ -49,35 +51,43 @@ TOKEN_SECRET 应由可信随机源产生并安全保管，重建时使用同一�
 ```powershell
 docker compose config --quiet
 docker compose build
-docker compose up -d --wait mysql
+docker compose up -d --wait mysql qdrant
 docker compose run --rm --no-deps --entrypoint /app/migrate api up
 docker compose run --rm --no-deps --entrypoint /app/seed -e SEED_TEACHER_A_PASSWORD -e SEED_STUDENT_A1_PASSWORD -e SEED_STUDENT_B1_PASSWORD api
 docker compose run --rm --no-deps --entrypoint /app/seed-materials api
+docker compose run --rm --no-deps --entrypoint /app/seed-skills api
 docker compose up -d --wait api nginx
 docker compose ps
 ```
 
-一次性命令基于 api 服务镜像，不增加常驻服务。首次输出分别为 migrations applied、accounts initialized、material seed initialized。重复初始化要先停止 nginx/api，使用相同卷和数据库；正常串行重跑输出 no change，不重置账号密码。出现冲突应检查而非删卷强行重建。
+一次性命令基于 api 服务镜像，不增加常驻服务。首次输出分别为 migrations applied、accounts initialized、material seed initialized、skill seed initialized。`seed-skills` 依赖 `seed` 建好的 A 班，**顺序不能提前**；它写入 A 班两份预置技能（数学、语文各一份），幂等重跑输出 no change，教师在页面上改过的技能不会被种子作业覆盖（不一致时报冲突）。重复初始化要先停止 nginx/api，使用相同卷和数据库；正常串行重跑输出 no change，不重置账号密码。出现冲突应检查而非删卷强行重建。
 
 打开 http://127.0.0.1:8080，使用教师 A、学生 A1、学生 B1 初始化密码登录，页面操作见 ../frontend/README.md。Go 启动恢复执行完成前业务可能 503；/health 的 200 只代表进程存活，`up --wait` 的 health 通过不代表所有业务已就绪。
 
-## 九个路由与故障验收
+## 路由与故障验收
 
-| 方法 | 路由 | 用途 |
-| --- | --- | --- |
-| GET | /health | 匿名进程存活 |
-| GET | /api/csrf | 获取绑定当前会话的 token |
-| POST | /api/login | 登录 |
-| GET | /api/me | 身份恢复 |
-| POST | /api/logout | 吊销当前会话 |
-| POST | /api/materials | 教师上传 |
-| GET | /api/materials | 本班列表 |
-| GET | /api/materials/{id} | 本班详情及 text |
-| GET | /api/materials/{id}/file | 本班原文件附件 |
+完整且不会漂移的接口清单见运行中的 `/openapi.yaml`（页面 `/swagger/` 可对照试调）——
+它与 `internal/httpapi` 的路由表由单元测试逐条比对。当前路由分组：
+
+| 分组 | 路由 |
+| --- | --- |
+| 匿名 | `GET /health`、`POST /api/login`、`GET /openapi.yaml` |
+| 身份 | `GET /api/me`、`POST /api/logout` |
+| 材料 | `POST /api/materials`（教师）、`GET /api/materials`、`GET /api/materials/{id}`、`GET /api/materials/{id}/file`、`POST /api/materials/{id}/reindex`（教师） |
+| 检索 | `GET /api/search`、`POST /api/ask` |
+| 智能体 | `POST /api/agents`（教师）、`GET /api/agents`、`GET /api/agents/{id}`、`PUT /api/agents/{id}`（教师）、`DELETE /api/agents/{id}`（教师）、`PUT /api/agents/{id}/skills`（教师）、`PUT /api/agents/{id}/materials`（教师） |
+| 技能 | `POST /api/skills`（教师）、`GET /api/skills`、`GET /api/skills/{id}`、`PUT /api/skills/{id}`（教师）、`DELETE /api/skills/{id}`（教师） |
+| 会话 | `GET /api/conversations`、`POST /api/conversations`、`GET /api/conversations/{id}`、`POST /api/conversations/{id}/messages`（SSE） |
+
+`GET /api/csrf` 与 `/api` 都是 404（前者随 JWT 改造移除），未知 `/api/` 路径仍返回 JSON 而非 React 页面。
+
+**流式回答需要单独放行**：`/api/conversations/{id}/messages` 走 nginx 里那条正则 location，
+关闭缓冲与压缩并把读超时提到 180 秒；放在 `/api/` 前缀下会因为 30 秒读超时把长回答截断，
+也会因默认缓冲让片段"攒着一次性出现"。
 
 Nginx 保留 Host 与路径，/api/ 和 /health 不回退成 React HTML；不缓存响应、不重试写请求。请求体流式转发，大小限制由 Go 在授权后执行。API 无法连接或超时时入口返回 JSON 503 error/message，不能返回静态 health 成功。Docker DNS 动态解析避免 API 重建换 IP 后仍访问旧地址。
 
-运行验收清单（T7 已完成教师 5 MiB 上传下载、九路由与 Go 停机/恢复，完整矩阵见 T8 已执行记录）：教师上传恰好 5 MiB TXT 后下载核对字节；A1 可见、B1 不可见；学生直接上传 403、匿名 401；未知 /api/ 路径仍为 JSON。登录后停止 MySQL，health 应 200、材料为 503；启动 MySQL 后原 Cookie 可继续访问。停止 api 后经 Nginx 的 health 应为安全 JSON 503，启动 api 后恢复。不要把 503 当作账号退出或自动重放上传。
+运行验收清单（T7 已完成教师 5 MiB 上传下载、九路由与 Go 停机/恢复，完整矩阵见 T8 已执行记录）：教师上传恰好 5 MiB TXT 后下载核对字节；A1 可见、B1 不可见；学生直接上传 403、匿名 401；未知 /api/ 路径仍为 JSON。登录后停止 MySQL，health 应 200、材料为 503；启动 MySQL 后原令牌可继续访问。停止 api 后经 Nginx 的 health 应为安全 JSON 503，启动 api 后恢复。不要把 503 当作账号退出或自动重放上传。
 
 ```powershell
 docker compose stop mysql
@@ -130,7 +140,7 @@ docker compose -p campusclaw-restore up -d --wait api nginx
 
 数据库导入与文件恢复都成功后才启动 API 的清理逻辑。验证账号、材料、文件哈希、两表关联及班级隔离；未过期会话只有在原 TOKEN_SECRET 和会话表都保留时才可能继续有效，过期不会延长。上述流程已在隔离容器执行：原会话、材料/知识库正文和文件 SHA-256 均匹配；完整三账号矩阵与过期会话已由第 8 组验收通过。
 
-本迭代不做生产高可用、SSO、注册找回、问答、聊天、作业流程、并发初始化、持续清理自动重试、分页、配额或上传幂等键。
+本迭代不做生产高可用、SSO、注册找回、作业流程、并发初始化、持续清理自动重试、分页、配额或上传幂等键。第 5 课新增的会话与消息只支持逐个读取（无分页）；技能工具只允许 `knowledge_search`，不引入通用工具调用。
 
 配置参考：[Compose 启动顺序](https://docs.docker.com/compose/how-tos/startup-order/)、[Nginx 代理指令](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)。
 

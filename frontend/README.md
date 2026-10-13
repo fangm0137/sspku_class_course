@@ -1,8 +1,16 @@
 # CampusClaw 班级资料室
 
-React 18 + TypeScript + Vite 前端。登录后显示本班材料；教师可以上传 TXT/MD，学生只能阅读及下载；侧栏「知识检索」可就本班材料做 `keyword`/`vector`/`hybrid` 三种模式的检索并列出可回溯的命中切片，「知识问答」可提问并给出带 `[1][2]` 出处的简短回答。教师还能在材料预览里按 `auto`/`hierarchy`/`custom` 显式重建该材料的检索索引。页面不提供班级切换、注册、聊天或作业流程。
+React 18 + TypeScript + Vite 前端。登录后显示本班材料；教师可以上传 TXT/MD，学生只能阅读及下载；侧栏「知识检索」可就本班材料做 `keyword`/`vector`/`hybrid` 三种模式的检索并列出可回溯的命中切片，「知识问答」可提问并给出带 `[1][2]` 出处的简短回答。教师还能在材料预览里按 `auto`/`hierarchy`/`custom` 显式重建该材料的检索索引。页面不提供班级切换、注册或作业流程。
 
-> 检索与问答的规约与实测记录见 `openspec/specs/knowledge-qa/spec.md`、`openspec/changes/add-traceable-vector-retrieval/` 与 `openspec/changes/archive/2026-09-30-add-class-scoped-qa/`；接口字段与降级口径见 [backend/SEARCH.md](../backend/SEARCH.md)。本文件只描述前端行为。
+第 5 课新增三个视图：
+
+- **智能体对话**：选本班已启用的智能体新建会话（会话内智能体固定），提问后经 SSE 逐段渲染回答；`meta` 事件先到，因此"本次依据"先于正文出现，落库后再以服务端返回的消息覆盖临时缓冲。
+- **智能体**（教师）：新建/编辑/启停智能体，并勾选它绑定的技能与材料（整体替换）。
+- **技能**（教师）：直接提交技能文件原文创建或修改；解析失败会把带行号的提示原样显示出来。
+
+前端另有一个不需登录的接口文档页 `/swagger/`（由 Nginx 托管，Go 提供 `/openapi.yaml`）。它会自动复用登录时保存在浏览器里的令牌，因此可以直接在文档里试调受保护接口。
+
+> 检索与问答的规约与实测记录见 `openspec/specs/knowledge-qa/spec.md`、`openspec/changes/add-traceable-vector-retrieval/` 与 `openspec/changes/archive/2026-09-30-add-class-scoped-qa/`；接口字段与降级口径见 [backend/SEARCH.md](../backend/SEARCH.md)，智能体、技能路由与流式事件见 [backend/TUTOR.md](../backend/TUTOR.md)。本文件只描述前端行为。
 
 ## 本地启动
 

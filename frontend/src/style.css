@@ -55,3 +55,41 @@
 .reindex-row select{padding:7px 10px;border:1px solid #d9dfd6;border-radius:6px;background:#fff;color:#243e34;font-size:12px}
 .reindex-row .muted{font-size:11px;flex:1 1 180px;min-width:0}
 @media(max-width:700px){.search-panel{padding:18px}.search-input-row{flex-direction:column}.mode-group legend{float:none;display:block;padding-bottom:6px}}
+
+/* 第 5 课：智能体对话与教师侧管理。沿用既有配色、圆角与字号。 */
+.chat-panel{display:grid;grid-template-columns:280px minmax(0,1fr);gap:22px;align-items:start}
+.chat-side{background:#fff;border:1px solid #e0e6dc;border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:16px}
+.new-conversation{display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #edf0e8;padding-bottom:16px}
+.new-conversation label{font-size:12px;font-weight:600;color:#6c7e60}
+.new-conversation select{padding:9px 10px;border:1px solid #d9dfd6;border-radius:7px;background:#fff;color:#243e34;font-size:13px}
+.new-conversation .muted{font-size:11px;margin:0}
+.conversation-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;max-height:420px;overflow:auto}
+.conversation-row{display:flex;flex-direction:column;gap:3px;width:100%;text-align:left;background:#fbfcf8;border:1px solid #e5eadf;border-radius:8px;padding:11px 13px;cursor:pointer}
+.conversation-row:hover:not(:disabled){background:#f2f6ec}
+.conversation-row.selected{border-color:#8fae87;background:#e7efe1}
+.conversation-row strong{font-size:13px;color:#243e34;font-weight:600;overflow-wrap:anywhere}
+.conversation-row small{font-size:11px;color:#78916d}
+.chat-main{background:#fff;border:1px solid #e0e6dc;border-radius:10px;padding:25px;display:flex;flex-direction:column;gap:18px;min-height:460px}
+.chat-heading h2{margin:4px 0 2px;font-size:18px;color:#243e34}
+.chat-heading .muted{margin:0;font-size:12px}
+.chat-thread{display:flex;flex-direction:column;gap:18px;flex:1;overflow:auto;max-height:520px;padding-right:4px}
+.caret{display:inline-block;margin-left:2px;color:#5c8a63;animation:blink 1.1s steps(2,start) infinite}
+@keyframes blink{to{visibility:hidden}}
+.admin-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;align-items:start}
+.admin-form,.admin-list{background:#fff;border:1px solid #e0e6dc;border-radius:10px;padding:22px;display:flex;flex-direction:column;gap:14px}
+.admin-form form{display:flex;flex-direction:column;gap:8px}
+.admin-form label{font-size:13px;font-weight:600;color:#4c6b5c}
+.admin-form input[type="text"],.admin-form input:not([type]),.admin-form textarea{padding:11px 13px;border:1px solid #d9dfd6;border-radius:7px;background:#fff;color:#243e34;font-size:13px;font-family:inherit}
+.admin-form textarea{resize:vertical;line-height:1.7}
+.admin-list ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.admin-row{border:1px solid #e5eadf;border-radius:9px;padding:14px 16px;background:#fcfdfa;display:flex;flex-direction:column;gap:8px}
+.admin-row.selected{border-color:#8fae87;background:#f6f9f1}
+.admin-row-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:baseline}
+.admin-row-head strong{font-size:14px;color:#243e34}
+.admin-row .muted{margin:0;font-size:12px;overflow-wrap:anywhere}
+.admin-actions{display:flex;gap:14px}
+.bind-group{border:1px solid #e9ede3;border-radius:8px;padding:12px 14px;margin:0;display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+.bind-group legend{font-size:11px;font-weight:700;color:#78916d;padding:0 6px}
+.checkbox-row{display:flex;align-items:center;gap:8px;font-size:13px;color:#3c5348;font-weight:500}
+.checkbox-row input{accent-color:#5c8a63;margin:0}
+@media(max-width:980px){.chat-panel,.admin-layout{grid-template-columns:minmax(0,1fr)}.chat-side{order:2}}
