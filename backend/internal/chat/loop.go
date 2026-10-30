@@ -123,6 +123,13 @@ func (s *Service) runTools(ctx context.Context, prepared Prepared, callID uint64
 				status: audit.ToolDenied, text: fmt.Sprintf("本次提问的调用次数已达到上限（%d 次），这次没有执行。", limit),
 				ref: call.Name, errorText: "超出单轮调用次数上限",
 			}
+			// 被配额拦下的调用仍要记清"本来要调哪台服务器的哪个工具"，
+			// 否则审计里只留一个空服务器名，事后没法判断它是否本该被允许。
+			if declaration, found := findDeclaration(prepared.Declarations, call.Name); found {
+				outcome.ref = declaration.Ref
+				outcome.serverID = declaration.ServerID
+				outcome.serverName = declaration.ServerName
+			}
 		}
 		if s.audit != nil {
 			_ = s.audit.RecordToolCall(ctx, audit.ToolRow{

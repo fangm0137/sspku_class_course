@@ -1,0 +1,42 @@
+event: meta
+data: {"citations":[],"conversation_id":6,"skill":null,"status":"ok","user_message_id":44}
+
+event: delta
+data: {"text":"我"}
+
+event: delta
+data: {"text":"今天"}
+
+event: delta
+data: {"text":"能"}
+
+event: delta
+data: {"text":"帮"}
+
+event: delta
+data: {"text":"你"}
+
+event: delta
+data: {"text":"解决"}
+
+event: delta
+data: {"text":"数学"}
+
+event: delta
+data: {"text":"学科"}
+
+event: delta
+data: {"text":"中的"}
+
+event: delta
+data: {"text":"相关"}
+
+event: delta
+data: {"text":"问题"}
+
+event: delta
+data: {"text":"。"}
+
+event: done
+data: {"assistant_message_id":45}
+

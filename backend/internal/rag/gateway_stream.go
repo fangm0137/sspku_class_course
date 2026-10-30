@@ -50,7 +50,7 @@ func (g *Gateway) ChatStream(ctx context.Context, messages []ChatMessage, option
 
 // StreamTimeout 是流式生成的整体上限，由调用方放进请求上下文。
 // 工具循环可能包含多轮，因此这个上限覆盖整次提问而不是单轮。
-const StreamTimeout = 120 * time.Second
+const StreamTimeout = 150 * time.Second
 
 // AnswerStream 是给上层编排用的入口：把已组装好的消息交给对话网关做流式生成。
 // 这样"谁持有 HTTP 客户端与密钥"始终只有 rag 一处。

@@ -27,3 +27,6 @@ backend/server
 backend/server.exe
 backend/migrate
 backend/migrate.exe
+
+# 验收脚本的中间产物
+deploy/evidence/tmp/

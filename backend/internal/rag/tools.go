@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -105,6 +106,8 @@ func (g *Gateway) ChatStreamTools(ctx context.Context, request ChatRequest, onDe
 	response, err := g.stream.Do(httpRequest)
 	reply.Latency = time.Since(started)
 	if err != nil {
+		// 只记耗时与错误类型：请求体里有提示词与资料，不进日志。
+		log.Printf("chat gateway: request failed after %s: %v", reply.Latency.Round(time.Millisecond), err)
 		return reply, fmt.Errorf("%w: %v", ErrDependency, err)
 	}
 	defer response.Body.Close()
@@ -114,7 +117,9 @@ func (g *Gateway) ChatStreamTools(ctx context.Context, request ChatRequest, onDe
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<16))
 		return reply, fmt.Errorf("%w: status %d", ErrDependency, response.StatusCode)
 	}
-	if err := g.consumeStream(response.Body, &reply, onDelta); err != nil {
+	if err := g.consumeStream(ctx, response.Body, &reply, onDelta); err != nil {
+		log.Printf("chat gateway: stream failed after %s (status %d, finish %q): %v",
+			reply.Latency.Round(time.Millisecond), reply.HTTPStatus, reply.FinishReason, err)
 		return reply, err
 	}
 	reply.Latency = time.Since(started)
@@ -213,7 +218,7 @@ type toolCallFragment struct {
 	} `json:"function"`
 }
 
-func (g *Gateway) consumeStream(body io.Reader, reply *ChatReply, onDelta func(string) error) error {
+func (g *Gateway) consumeStream(ctx context.Context, body io.Reader, reply *ChatReply, onDelta func(string) error) error {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), streamLineLimit)
 	var answer strings.Builder
@@ -274,7 +279,7 @@ func (g *Gateway) consumeStream(body io.Reader, reply *ChatReply, onDelta func(s
 	reply.Content = answer.String()
 	reply.ToolCalls = calls.list()
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("%w: read stream", ErrDependency)
+		return fmt.Errorf("%w: read stream: %v", ErrDependency, err)
 	}
 	return nil
 }

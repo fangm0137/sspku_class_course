@@ -1,0 +1,7 @@
+=== MCP_MAX_CALLS=1：单轮只执行一次调用 ===
+提问：同时帮我做两次换算：12.5 毫米换成米，3 公里换成米，然后说下一步该检查什么。
+HTTP 200，事件：     41 delta       1 done       1 meta 
+第一轮：声明 1 条 · 模型提出 2 次调用 · finish = tool_calls
+   campus-tools.unit_convert 状态= ok 耗时= 1 ms 说明= 12.5 毫米 = 0.0125 米
+   campus-tools.unit_convert 状态= denied 耗时= 0 ms 说明= 超出单轮调用次数上限
+结论：模型提出 2 次调用，宿主只执行第 1 次；第 2 次记为 denied 并回传「超出单轮调用次数上限」；随后一轮正常作答，整次请求 200。

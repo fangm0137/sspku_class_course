@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"log"
 	"net/http"
 
 	promptlib "campusclaw/backend/internal/prompt"
@@ -46,6 +47,7 @@ func writeTemplateError(w http.ResponseWriter, err error) {
 	case errors.Is(err, promptlib.ErrNotFound):
 		materialNotFound(w)
 	default:
+		log.Printf("prompt template operation failed: %v", err)
 		securityError(w, 503)
 	}
 }

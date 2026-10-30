@@ -156,7 +156,7 @@ func (s *Store) Delete(ctx context.Context, classID, id uint64) error {
 		return ErrNotFound
 	}
 	var referenced int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM tutor_agents WHERE prompt_template_id=?").Scan(&referenced); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM tutor_agents WHERE prompt_template_id=?", id).Scan(&referenced); err != nil {
 		return err
 	}
 	if referenced > 0 {

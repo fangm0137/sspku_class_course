@@ -1,0 +1,94 @@
+
+=== 0. 登录取令牌 ===
+教师/学生令牌长度 208 / 209（不打印令牌本身）
+
+=== 1. 提示词模板（按名称复用） ===
+复用模板 #5
+
+=== 2. 应用（按名称复用，指向该模板） ===
+复用应用 #4（已重新指向模板）
+
+=== 3. 数学材料（标题含「数学」的都绑定；缺附录那份就补一份大材料） ===
+已上传大材料 #7（约 7672 字）
+关键字检索命中切片数：4
+将绑定的数学材料编号：6,7
+
+=== 4. MCP 服务器：登记（按名称复用）与连接 ===
+复用服务器 #1
+本次发现工具：formula_hint,unit_convert
+服务器列表里出现令牌原文的次数（应为 0）：0
+令牌字段呈现：campus-tools:has_token=True
+
+=== 5. 技能（按名称复用）：声明内置检索 + 一个外部工具 ===
+复用技能 #3
+
+=== 6. 绑定技能与材料，查看组成视图 ===
+模板=验收模板-数学
+技能=验收解题引导
+材料=数学自学笔记.md,数学自学笔记-附录.md
+工具引用=unit_convert@campus-tools
+
+=== 7. 提问一：材料能回答的问题（不应触发工具调用） ===
+会话 #6
+事件序列：meta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta done 
+正文：单位换算时先统一单位，不要在同一个式子里混用不同长度单位（如公里与米）[1][2]。要检查的两件事：一是换算关系是否正确，二是结果的数量级是否合理[1][2]。
+meta 是否有 tool_calls：没有（字段整体省略）
+引用条数：4
+
+=== 8. 提问二：材料回答不了的换算（应触发工具调用） ===
+提问：帮我把 12.5 毫米换算成米，再说下一步该检查什么。
+事件序列：meta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta delta done 
+正文：12.5毫米换算成米是0.0125米。下一步该检查换算关系是否正确，以及结果的数量级是否合理[1][2]。
+meta 的 tool_calls：[{"ref": "unit_convert@campus-tools", "status": "ok", "latency_ms": 0, "text": "12.5 毫米 = 0.0125 米"}]
+
+=== 8b. 提问三：不命中任何技能（请求体应当不带 tools 字段） ===
+提问：请用一句话说明你今天能帮我做什么。
+事件序列：meta delta delta delta delta delta delta delta delta delta delta delta delta done 
+meta 是否有 tool_calls：没有（字段整体省略）
+
+=== 9. 审计：本次会话的每一轮 ===
+#34 轮次=1 消息=2 注入=1218字 技能=验收解题引导 声明=1 调用=0 状态=ok finish=stop 7605ms
+#35 轮次=1 消息=4 注入=1218字 技能=验收解题引导 声明=1 调用=1 状态=ok finish=tool_calls 1796ms
+#36 轮次=2 消息=6 注入=18字 技能=验收解题引导 声明=1 调用=0 状态=ok finish=stop 2135ms
+#37 轮次=1 消息=6 注入=0字 技能=- 声明=0 调用=0 状态=ok finish=stop 8852ms
+本次会话共 4 条调用记录
+
+=== 10. Q1/Q3：没有工具的那一轮（模板渲染 + 技能注入） ===
+请求体顶层字段： ['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature', 'tool_choice', 'tools']
+messages 条数： 2
+system 首段： 你是验收应用-数学，只依据本班材料作答。今天是2026-10-30。
+system 是否含「当前技能：」： True
+请求体含 template_id： False
+系统消息字符数： 345
+
+=== 11. Q5：带工具的那一轮之后（工具结果回到消息序列） ===
+第一轮：tools 条数 = 1  finish = tool_calls
+  unit_convert · required=['value', 'from', 'to'] · 顶层键=['properties', 'required', 'type']
+工具调用审计：
+  轮次1 campus-tools.unit_convert 状态=ok 0ms 结果=12.5 毫米 = 0.0125 米
+第二轮：round_no = 2  messages 角色 = ['system', 'user', 'assistant', 'user', 'assistant', 'tool']
+  role=tool tool_call_id = call_q27i0c4byx6s0278fzs9hif6  content = 12.5 毫米 = 0.0125 米
+第二轮是否仍带 tools： True
+
+=== 11b. 不命中技能那一轮：请求体里没有 tools ===
+请求体顶层字段： ['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature']
+是否含 tools / tool_choice： False / False
+请求体里 tools 字样出现次数： 0
+技能名： （未命中）
+系统消息含「没有匹配到已启用的学科技能」： True
+系统消息字符数： 201
+
+=== 12. Q2：材料正文字数 vs 本次注入字数 ===
+无工具那轮：材料 2 份，正文合计 8266 字，本次注入 1218 字
+有工具那轮：材料正文 8266 字，本次注入 18 字（含工具结果）
+
+=== 13. 越权与鉴权检查 ===
+学生读审计：200（200，只看自己）
+学生写模板：403（403）
+学生登记服务器：403（403）
+无令牌读审计：401（401）
+内置应用 #1 删除：409（409）
+内置技能 #1 删除：409（409）
+
+=== 完成 ===
+原始响应在 ./deploy/evidence/，汇总在本文件。

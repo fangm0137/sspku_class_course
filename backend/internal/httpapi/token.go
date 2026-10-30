@@ -116,6 +116,12 @@ func bearerToken(r *http.Request) (string, bool) {
 	return token, true
 }
 
+// identityContext 把已核实的账号放进请求上下文。
+// 它只携带账号，不携带"查账号"那一步的超时——下游可能合法地跑很久。
+func identityContext(parent context.Context, user userIdentity) context.Context {
+	return context.WithValue(parent, identityKey{}, user)
+}
+
 // RequireIdentity verifies the bearer token and then loads the authoritative
 // account row, so client supplied roles or classes can never widen access.
 func (s *Security) RequireIdentity(next http.Handler, teacherOnly bool) http.Handler {
@@ -130,10 +136,13 @@ func (s *Security) RequireIdentity(next http.Handler, teacherOnly bool) http.Han
 			securityError(w, 401)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		// 这个超时只覆盖"查账号"这一步。它 MUST NOT 传递到业务处理器：
+		// 一次流式回答可能合法地跑几十秒（工具循环尤其如此），
+		// 把 5 秒的查询预算带下去会让长回答被误判成依赖超时。
+		lookupCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		var user userIdentity
-		err := s.db.QueryRowContext(ctx, "SELECT id,username,role,class_id FROM users WHERE id=?", claims.Subject).
+		err := s.db.QueryRowContext(lookupCtx, "SELECT id,username,role,class_id FROM users WHERE id=?", claims.Subject).
 			Scan(&user.ID, &user.Username, &user.Role, &user.ClassID)
 		if errors.Is(err, sql.ErrNoRows) {
 			securityError(w, 401)
@@ -147,6 +156,6 @@ func (s *Security) RequireIdentity(next http.Handler, teacherOnly bool) http.Han
 			apiError(w, 403, "forbidden", "无权执行此操作")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, identityKey{}, user)))
+		next.ServeHTTP(w, r.WithContext(identityContext(r.Context(), user)))
 	})
 }
