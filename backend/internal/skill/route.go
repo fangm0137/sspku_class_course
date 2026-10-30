@@ -11,6 +11,10 @@ type Row struct {
 	Description string
 	SubjectText string
 	Enabled     bool
+	// Tools 是该技能声明的工具：内置的 knowledge_search，或「工具名@服务器名」。
+	Tools []string
+	// Builtin 为真表示平台自带（seed_key 非空），不可删除但可停用。
+	Builtin bool
 }
 
 // Score 计算一条技能对某个提问的命中词数：适用条件按分隔符切词，

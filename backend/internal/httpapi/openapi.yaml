@@ -25,6 +25,12 @@ tags:
     description: 智能体与其技能、材料绑定
   - name: skills
     description: 学科技能（由文本文件定义）
+  - name: templates
+    description: 提示词模板（班级范围，服务端渲染一次）
+  - name: mcp
+    description: 外部工具：MCP 服务器的登记、连接与工具发现
+  - name: audit
+    description: 模型调用审计（回答"到底给模型发了什么"）
   - name: conversations
     description: 会话与流式回答
   - name: system
@@ -89,6 +95,8 @@ components:
         id: { type: integer, format: int64 }
         name: { type: string, description: 班内唯一，不超过 64 字 }
         prompt: { type: string, description: 留空时回退到服务端默认角色设定 }
+        prompt_template_id: { type: integer, format: int64, nullable: true, description: 非空时模板优先于自由文本 }
+        builtin: { type: boolean, description: 平台自带应用不可删除，但可停用与改写绑定 }
         enabled: { type: boolean }
         skill_ids: { type: array, items: { type: integer, format: int64 } }
         material_ids: { type: array, items: { type: integer, format: int64 } }
@@ -100,8 +108,87 @@ components:
         trigger_text: { type: string, description: 按分隔符切词后与提问做子串匹配 }
         description: { type: string }
         subject_text: { type: string, description: 资料范围；命中该词的技能只在标题含该词的材料内检索 }
-        tools: { type: array, items: { type: string, enum: [knowledge_search] } }
+        tools:
+          type: array
+          description: knowledge_search 或「工具名@服务器名」
+          items: { type: string }
         enabled: { type: boolean }
+        builtin: { type: boolean, description: 平台自带技能不可删除，但可停用 }
+    PromptTemplate:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, description: 班内唯一，不超过 64 字 }
+        body: { type: string, description: 1–4000 字，支持 {{app_name}}/{{today}}/{{question}} }
+        description: { type: string }
+        enabled: { type: boolean, description: 停用只影响新建引用，已引用的应用仍按它渲染 }
+    PromptTemplateWrite:
+      type: object
+      required: [name, body]
+      properties:
+        name: { type: string }
+        body: { type: string }
+        description: { type: string }
+        enabled: { type: boolean }
+    NamedItem:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+    McpServer:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string, description: 班内唯一 }
+        base_url: { type: string }
+        has_token: { type: boolean, description: 只回"是否已配置"，不回原文 }
+        status: { type: string, enum: [disconnected, connected, error] }
+        last_error: { type: string }
+        connected_at: { type: string, format: date-time }
+        tool_count: { type: integer }
+    McpTool:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        input_schema: { type: object, description: 发现结果原文，既作声明也作参数校验依据 }
+    LlmCall:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        conversation_id: { type: integer, format: int64 }
+        user_id: { type: integer, format: int64 }
+        agent_id: { type: integer, format: int64 }
+        round_no: { type: integer, description: 同一次提问内的第几轮，工具循环会在一轮提问里产生多条 }
+        model: { type: string }
+        system_prompt: { type: string, description: 系统消息全文（派生列） }
+        user_prompt: { type: string, description: 最后一条用户消息全文（派生列） }
+        message_count: { type: integer }
+        context_chars: { type: integer, description: 注入的资料与工具结果字符数（派生列） }
+        skill_name: { type: string }
+        tool_def_count: { type: integer, description: 本次请求带了几条工具声明 }
+        tool_call_count: { type: integer, description: 模型提出了几次调用 }
+        finish_reason: { type: string }
+        status: { type: string, enum: [ok, failed] }
+        http_status: { type: integer }
+        prompt_tokens: { type: integer }
+        completion_tokens: { type: integer }
+        latency_ms: { type: integer }
+        error_text: { type: string }
+        created_at: { type: string, format: date-time }
+    ToolCall:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        round_no: { type: integer }
+        server_name: { type: string }
+        tool_name: { type: string }
+        arguments_json: { type: string }
+        status: { type: string, enum: [ok, denied, error] }
+        result_excerpt: { type: string }
+        error_text: { type: string }
+        latency_ms: { type: integer }
+        created_at: { type: string, format: date-time }
     Conversation:
       type: object
       properties:
@@ -314,6 +401,83 @@ paths:
                   hits: { type: array, items: { $ref: '#/components/schemas/AskCitation' } }
         '400': { description: 问题为空, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '503': { description: 对话网关不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/prompt-templates:
+    get:
+      tags: [templates]
+      summary: 列出本班提示词模板
+      description: 学生只看到已启用的；教师加 ?all=1 可看到停用的。
+      parameters:
+        - { name: all, in: query, schema: { type: string, enum: ['1'] } }
+      responses:
+        '200':
+          description: 模板列表与支持的占位符
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/PromptTemplate' } }
+                  placeholders: { type: array, items: { type: string } }
+    post:
+      tags: [templates]
+      summary: 新建模板（仅教师）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromptTemplateWrite' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer, format: int64 } } }
+        '400': { description: 字段不合规或班内重名, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/prompt-templates/{id}:
+    get:
+      tags: [templates]
+      summary: 读取模板
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 模板
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PromptTemplate' }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    put:
+      tags: [templates]
+      summary: 修改模板（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PromptTemplateWrite' }
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '400': { description: 字段不合规或班内重名, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      tags: [templates]
+      summary: 删除模板（仅教师）
+      description: 仍被应用引用时返回 409，不级联清空引用。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '409': { description: 仍被应用引用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/agents:
     get:
       tags: [agents]
@@ -400,6 +564,33 @@ paths:
           content:
             application/json:
               schema: { type: object, properties: { ok: { type: boolean } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/agents/{id}/composition:
+    get:
+      tags: [agents]
+      summary: 应用的组成视图（只读）
+      description: |
+        返回该应用当前实际生效的内容：模板编号与名称、候选技能名、绑定材料标题、
+        可调用的外部工具引用。学生看到的是与提问时同一份内容；跨班返回 404。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 组成视图
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: { type: integer, format: int64 }
+                  name: { type: string }
+                  builtin: { type: boolean }
+                  prompt: { type: string }
+                  template_id: { type: integer, format: int64, nullable: true }
+                  template_name: { type: string }
+                  skills: { type: array, items: { $ref: '#/components/schemas/NamedItem' } }
+                  materials: { type: array, items: { $ref: '#/components/schemas/NamedItem' } }
+                  tool_refs: { type: array, items: { type: string } }
         '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/agents/{id}/skills:
     put:
@@ -531,6 +722,209 @@ paths:
             application/json:
               schema: { type: object, properties: { ok: { type: boolean } } }
         '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/skills/upload:
+    post:
+      tags: [skills]
+      summary: 上传技能文件（仅教师）
+      description: |
+        multipart/form-data，字段名 `file`，仅接受 .txt / .md，正文不超过 64 KiB 且必须是 UTF-8。
+        解析与校验与 JSON 创建完全共用一套：解析失败同样返回 400 并带行号。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer, format: int64 } } }
+        '400': { description: 扩展名、大小、编码或内容不合规, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/mcp/servers:
+    get:
+      tags: [mcp]
+      summary: 列出本班 MCP 服务器
+      description: 只返回"是否已配置令牌"，任何字段都不等于令牌原文。
+      responses:
+        '200':
+          description: 服务器列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/McpServer' } }
+    post:
+      tags: [mcp]
+      summary: 登记 MCP 服务器（仅教师）
+      description: 令牌必填并以密文落库；每台服务器使用各自的令牌。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, base_url, token]
+              properties:
+                name: { type: string }
+                base_url: { type: string, description: 仅 http/https，且不能内嵌账号密码 }
+                token: { type: string, description: 只写入，永不回传 }
+      responses:
+        '201':
+          description: 已登记
+          content:
+            application/json:
+              schema: { type: object, properties: { id: { type: integer, format: int64 } } }
+        '400': { description: 字段不合规或班内重名, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/mcp/servers/{id}:
+    put:
+      tags: [mcp]
+      summary: 修改服务器（仅教师）
+      description: 令牌留空表示沿用原令牌；地址或令牌变化会清空工具缓存并回到未连接。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, base_url]
+              properties:
+                name: { type: string }
+                base_url: { type: string }
+                token: { type: string }
+      responses:
+        '200':
+          description: 已保存
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '400': { description: 字段不合规, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    delete:
+      tags: [mcp]
+      summary: 删除服务器（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 已删除（工具缓存级联清理）
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/mcp/servers/{id}/connect:
+    post:
+      tags: [mcp]
+      summary: 连接并发现工具（仅教师）
+      description: |
+        依次执行 initialize 握手与 tools/list 发现，并用本次结果整体替换缓存。
+        失败时状态置为 error、清空清单、返回 502，且不影响问答主路径。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 连接成功与本次发现的工具
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools: { type: array, items: { $ref: '#/components/schemas/McpTool' } }
+        '502': { description: 握手或发现失败, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/mcp/servers/{id}/disconnect:
+    post:
+      tags: [mcp]
+      summary: 断开并清空工具缓存（仅教师）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 已断开
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean } } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/mcp/servers/{id}/tools:
+    get:
+      tags: [mcp]
+      summary: 查看最近一次发现的工具清单
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 工具清单（含输入结构）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/McpTool' } }
+        '404': { description: 不存在或不属于本班, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/llm-calls:
+    get:
+      tags: [audit]
+      summary: 模型调用审计列表
+      description: 教师看本班，学生只看自己发起的记录；新的在前。
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        '200':
+          description: 审计列表（含轮次、工具声明数与调用数）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/LlmCall' } }
+  /api/llm-calls/{id}:
+    get:
+      tags: [audit]
+      summary: 单条审计（含完整请求体与工具调用）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 审计详情
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/LlmCall' }
+                  - type: object
+                    properties:
+                      request_json: { type: string, description: 实际发出的请求体原文 }
+                      response_text: { type: string }
+                      response_json: { type: string }
+                      tool_calls: { type: array, items: { $ref: '#/components/schemas/ToolCall' } }
+        '404': { description: 不存在或越权, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  /api/llm-calls/{id}/context-size:
+    get:
+      tags: [audit]
+      summary: 材料正文总字数与本次注入字数
+      description: 回答第 3 问：绑定知识库是否全量传给模型。两个数字都由数据库计算。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 对比结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  material_count: { type: integer }
+                  source_chars: { type: integer, description: 绑定材料正文的总字符数 }
+                  context_chars: { type: integer, description: 本次实际注入的字符数 }
+                  material_titles: { type: array, items: { type: string } }
+        '404': { description: 不存在或越权, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   /api/conversations:
     get:
       tags: [conversations]

@@ -3,10 +3,12 @@ package httpapi
 import (
 	"database/sql"
 	"io"
+	"log"
 	"net/http"
 	"os"
 
 	"campusclaw/backend/internal/chat"
+	"campusclaw/backend/internal/mcp"
 	"campusclaw/backend/internal/rag"
 )
 
@@ -54,18 +56,34 @@ func newHandler(db *sql.DB, secret string, store *uploadStore, ragServices ...*r
 		skillsH       skillsHandler
 		conversations conversationsHandler
 		answer        answerHandler
+		templates     templatesHandler
+		servers       mcpHandler
+		llmCalls      llmCallsHandler
 	)
 	if db != nil {
-		chatService := chat.New(db, ragService)
+		// MCP 配置全部可选：缺失或非法时只是关掉外部工具，不阻断第 3–5 课的路径。
+		settings, err := mcp.FromEnv(os.Getenv, secret)
+		if err != nil {
+			log.Printf("mcp configuration ignored: %v", err)
+			settings = mcp.Settings{
+				CallTimeout: mcp.DefaultCallTimeout, MaxRounds: mcp.DefaultMaxRounds, MaxCalls: mcp.DefaultMaxCalls,
+			}
+		}
+		chatService := chat.New(db, ragService, chat.Options{Settings: settings})
 		agents.store = chatService.Agents()
 		skillsH.store = chatService.Skills()
+		skillsH.servers = chatService.Servers()
 		conversations.chats = chatService.Conversations()
 		conversations.agents = chatService.Agents()
 		answer.service = chatService
+		templates.store = chatService.Templates()
+		servers.store = chatService.Servers()
+		llmCalls.store = chatService.Audit()
 	}
 	for _, item := range routeTable(routeHandlers{
 		upload: store.upload, materials: materials, ask: ask, search: search, reindex: reindex,
 		agents: agents, skills: skillsH, conversations: conversations, answer: answer,
+		templates: templates, servers: servers, llmCalls: llmCalls,
 		security: security,
 	}) {
 		if item.Public {
@@ -98,6 +116,9 @@ type routeHandlers struct {
 	skills        skillsHandler
 	conversations conversationsHandler
 	answer        answerHandler
+	templates     templatesHandler
+	servers       mcpHandler
+	llmCalls      llmCallsHandler
 	security      *Security
 }
 
@@ -126,19 +147,40 @@ func routeTable(h routeHandlers) []route {
 		authenticated("GET", "/api/search", h.search.search),
 		authenticated("POST", "/api/ask", h.ask.ask),
 
+		// 学生可读本班已启用的模板（理解应用会怎样被引导），但不可写。
+		authenticated("GET", "/api/prompt-templates", h.templates.list),
+		teacherOnly("POST", "/api/prompt-templates", h.templates.create),
+		authenticated("GET", "/api/prompt-templates/{id}", h.templates.get),
+		teacherOnly("PUT", "/api/prompt-templates/{id}", h.templates.update),
+		teacherOnly("DELETE", "/api/prompt-templates/{id}", h.templates.remove),
+
 		teacherOnly("POST", "/api/agents", h.agents.create),
 		authenticated("GET", "/api/agents", h.agents.list),
 		authenticated("GET", "/api/agents/{id}", h.agents.get),
+		authenticated("GET", "/api/agents/{id}/composition", h.agents.composition),
 		teacherOnly("PUT", "/api/agents/{id}", h.agents.update),
 		teacherOnly("DELETE", "/api/agents/{id}", h.agents.remove),
 		teacherOnly("PUT", "/api/agents/{id}/skills", h.agents.replaceSkills),
 		teacherOnly("PUT", "/api/agents/{id}/materials", h.agents.replaceMaterials),
 
 		teacherOnly("POST", "/api/skills", h.skills.create),
+		teacherOnly("POST", "/api/skills/upload", h.skills.upload),
 		authenticated("GET", "/api/skills", h.skills.list),
 		authenticated("GET", "/api/skills/{id}", h.skills.get),
 		teacherOnly("PUT", "/api/skills/{id}", h.skills.update),
 		teacherOnly("DELETE", "/api/skills/{id}", h.skills.remove),
+
+		teacherOnly("POST", "/api/mcp/servers", h.servers.create),
+		authenticated("GET", "/api/mcp/servers", h.servers.list),
+		teacherOnly("PUT", "/api/mcp/servers/{id}", h.servers.update),
+		teacherOnly("DELETE", "/api/mcp/servers/{id}", h.servers.remove),
+		teacherOnly("POST", "/api/mcp/servers/{id}/connect", h.servers.connect),
+		teacherOnly("POST", "/api/mcp/servers/{id}/disconnect", h.servers.disconnect),
+		authenticated("GET", "/api/mcp/servers/{id}/tools", h.servers.tools),
+
+		authenticated("GET", "/api/llm-calls", h.llmCalls.list),
+		authenticated("GET", "/api/llm-calls/{id}", h.llmCalls.get),
+		authenticated("GET", "/api/llm-calls/{id}/context-size", h.llmCalls.contextSize),
 
 		authenticated("GET", "/api/conversations", h.conversations.list),
 		authenticated("POST", "/api/conversations", h.conversations.create),

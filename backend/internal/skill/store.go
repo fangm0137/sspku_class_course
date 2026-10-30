@@ -3,6 +3,7 @@ package skill
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -14,6 +15,8 @@ var (
 	ErrNotFound = errors.New("skill not found")
 	// ErrNameTaken 表示班内名称重复。
 	ErrNameTaken = errors.New("skill name already used in this class")
+	// ErrBuiltin 表示这是平台自带的技能：可停用，不可删除（409）。
+	ErrBuiltin = errors.New("builtin skill cannot be deleted")
 )
 
 // Detail 是技能记录加上供编辑回填的原文。
@@ -31,10 +34,13 @@ func New(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
+// selectColumns 固定列序，scanRows 与 Detail 都依赖它。
+const selectColumns = "id,class_id,name,trigger_text,description,IFNULL(subject_text,''),enabled,tools_json,seed_key IS NOT NULL"
+
 // List 返回本班技能，按编号升序（路由的同分裁决依赖这个顺序）。
 func (s *Store) List(ctx context.Context, classID uint64) ([]Row, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id,class_id,name,trigger_text,description,IFNULL(subject_text,''),enabled FROM skills WHERE class_id=? ORDER BY id", classID)
+		"SELECT "+selectColumns+" FROM skills WHERE class_id=? ORDER BY id", classID)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +61,7 @@ func (s *Store) ListByIDs(ctx context.Context, classID uint64, ids []uint64) ([]
 		args = append(args, id)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id,class_id,name,trigger_text,description,IFNULL(subject_text,''),enabled FROM skills WHERE class_id=? AND enabled=1 AND id IN ("+strings.Join(placeholders, ",")+") ORDER BY id", args...)
+		"SELECT "+selectColumns+" FROM skills WHERE class_id=? AND enabled=1 AND id IN ("+strings.Join(placeholders, ",")+") ORDER BY id", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -66,15 +72,18 @@ func (s *Store) ListByIDs(ctx context.Context, classID uint64, ids []uint64) ([]
 // Detail 读取本班单个技能（含原文），跨班与不存在都返回 ErrNotFound。
 func (s *Store) Detail(ctx context.Context, classID, id uint64) (Detail, error) {
 	var item Detail
+	var tools []byte
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id,class_id,name,trigger_text,description,IFNULL(subject_text,''),enabled,source_text FROM skills WHERE id=? AND class_id=?", id, classID).
-		Scan(&item.ID, &item.ClassID, &item.Name, &item.TriggerText, &item.Description, &item.SubjectText, &item.Enabled, &item.SourceText)
+		"SELECT "+selectColumns+",source_text FROM skills WHERE id=? AND class_id=?", id, classID).
+		Scan(&item.ID, &item.ClassID, &item.Name, &item.TriggerText, &item.Description, &item.SubjectText,
+			&item.Enabled, &tools, &item.Builtin, &item.SourceText)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Detail{}, ErrNotFound
 	}
 	if err != nil {
 		return Detail{}, err
 	}
+	item.Tools = decodeTools(tools)
 	return item, nil
 }
 
@@ -128,17 +137,21 @@ func (s *Store) Update(ctx context.Context, classID, id uint64, definition Defin
 }
 
 // Delete 删除本班技能；绑定关系由外键级联清理。
+// 平台自带技能不可删除：它是"内置技能"这一能力的证据，误删即失去演示条件。
 func (s *Store) Delete(ctx context.Context, classID, id uint64) error {
-	result, err := s.db.ExecContext(ctx, "DELETE FROM skills WHERE id=? AND class_id=?", id, classID)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
+	var builtin bool
+	err := s.db.QueryRowContext(ctx, "SELECT seed_key IS NOT NULL FROM skills WHERE id=? AND class_id=?", id, classID).Scan(&builtin)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if builtin {
+		return ErrBuiltin
+	}
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM skills WHERE id=? AND class_id=?", id, classID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -147,12 +160,24 @@ func scanRows(rows *sql.Rows) ([]Row, error) {
 	items := make([]Row, 0, 4)
 	for rows.Next() {
 		var item Row
-		if err := rows.Scan(&item.ID, &item.ClassID, &item.Name, &item.TriggerText, &item.Description, &item.SubjectText, &item.Enabled); err != nil {
+		var tools []byte
+		if err := rows.Scan(&item.ID, &item.ClassID, &item.Name, &item.TriggerText, &item.Description,
+			&item.SubjectText, &item.Enabled, &tools, &item.Builtin); err != nil {
 			return nil, err
 		}
+		item.Tools = decodeTools(tools)
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// decodeTools 解出工具列表；解不开时退回"只认识内置工具"的保守结果。
+func decodeTools(raw []byte) []string {
+	var tools []string
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return []string{KnowledgeSearchTool}
+	}
+	return tools
 }
 
 func nullable(value string) any {

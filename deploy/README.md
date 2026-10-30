@@ -6,6 +6,8 @@
 > `verify-e2e.ps1` 中与登录 Cookie、`X-CSRF-Token`、会话表相关的断言仍描述第 3 课方案，尚未按 token 契约重写；`VERIFY-T7.md`、`VERIFY-T8.md`、`SCENARIO-EVIDENCE.md` 是当时的验收记录，不随本次变更改写。以 token 契约重跑完整部署矩阵属于后续待办。
 >
 > **变更提示（add-agent-skills-and-streaming-qa，第 5 课）**：迁移新增 `000005`（六张表），镜像新增 `seed-skills` 二进制与 `/swagger/` 静态目录，Compose 初始化顺序多一步 `seed-skills`（必须在 `seed` 之后）。Nginx 新增一条正则 location 承载 SSE。
+>
+> **变更提示（add-app-platform-mcp-and-llm-audit，个人项目验收）**：迁移新增 `000006`（四张新表 + `tutor_agents` 两列），镜像新增 `seed-apps` 二进制，Compose 新增 `mcp` 服务（`deploy/mcp.Dockerfile`）与 `MCP_*` 可选环境变量，初始化顺序多一步 `seed-apps`（必须在 `seed-skills` 之后）。
 
 ## 前提与配置
 
@@ -51,16 +53,19 @@ TOKEN_SECRET 应由可信随机源产生并安全保管，重建时使用同一�
 ```powershell
 docker compose config --quiet
 docker compose build
-docker compose up -d --wait mysql qdrant
+docker compose up -d --wait mysql qdrant mcp
 docker compose run --rm --no-deps --entrypoint /app/migrate api up
 docker compose run --rm --no-deps --entrypoint /app/seed -e SEED_TEACHER_A_PASSWORD -e SEED_STUDENT_A1_PASSWORD -e SEED_STUDENT_B1_PASSWORD api
 docker compose run --rm --no-deps --entrypoint /app/seed-materials api
 docker compose run --rm --no-deps --entrypoint /app/seed-skills api
+docker compose run --rm --no-deps --entrypoint /app/seed-apps api
 docker compose up -d --wait api nginx
 docker compose ps
 ```
 
-一次性命令基于 api 服务镜像，不增加常驻服务。首次输出分别为 migrations applied、accounts initialized、material seed initialized、skill seed initialized。`seed-skills` 依赖 `seed` 建好的 A 班，**顺序不能提前**；它写入 A 班两份预置技能（数学、语文各一份），幂等重跑输出 no change，教师在页面上改过的技能不会被种子作业覆盖（不一致时报冲突）。重复初始化要先停止 nginx/api，使用相同卷和数据库；正常串行重跑输出 no change，不重置账号密码。出现冲突应检查而非删卷强行重建。
+一次性命令基于 api 服务镜像，不增加常驻服务。首次输出分别为 migrations applied、accounts initialized、material seed initialized、skill seed initialized、app seed initialized。`seed-skills` 依赖 `seed` 建好的 A 班，**顺序不能提前**；`seed-apps` 依赖 `seed-skills` 建好的两份技能，并在材料初始化之后运行（它按标题里的学科词挑选材料，没有匹配只是不绑定，不会失败）。两者都幂等，重跑输出 no change，教师在页面上改过的内容不会被种子作业覆盖（不一致时报冲突）。重复初始化要先停止 nginx/api，使用相同卷和数据库；正常串行重跑输出 no change，不重置账号密码。出现冲突应检查而非删卷强行重建。
+
+`mcp` 是"外部工具"能力的被调用方，由 `deploy/mcp.Dockerfile` 构建，与 `api` 同网。它的令牌只从环境变量 `MCP_AUTH_TOKEN` 读取，留空时 `/mcp` 一律 401；仓库里只有 `.env.example` 的空占位。教师登记服务器时把 `http://mcp:8090` 与同一个令牌填进页面即可完成连接与工具发现。协议形状、令牌处理与调用循环见 [backend/MCP.md](../backend/MCP.md)，审计字段见 [backend/AUDIT.md](../backend/AUDIT.md)。
 
 打开 http://127.0.0.1:8080，使用教师 A、学生 A1、学生 B1 初始化密码登录，页面操作见 ../frontend/README.md。Go 启动恢复执行完成前业务可能 503；/health 的 200 只代表进程存活，`up --wait` 的 health 通过不代表所有业务已就绪。
 
@@ -140,7 +145,7 @@ docker compose -p campusclaw-restore up -d --wait api nginx
 
 数据库导入与文件恢复都成功后才启动 API 的清理逻辑。验证账号、材料、文件哈希、两表关联及班级隔离；未过期会话只有在原 TOKEN_SECRET 和会话表都保留时才可能继续有效，过期不会延长。上述流程已在隔离容器执行：原会话、材料/知识库正文和文件 SHA-256 均匹配；完整三账号矩阵与过期会话已由第 8 组验收通过。
 
-本迭代不做生产高可用、SSO、注册找回、作业流程、并发初始化、持续清理自动重试、分页、配额或上传幂等键。第 5 课新增的会话与消息只支持逐个读取（无分页）；技能工具只允许 `knowledge_search`，不引入通用工具调用。
+本迭代不做生产高可用、SSO、注册找回、作业流程、并发初始化、持续清理自动重试、分页、配额或上传幂等键。第 5 课新增的会话与消息只支持逐个读取（无分页）。外部工具走 function calling（模型提议、宿主执行），只支持 `工具名@服务器名` 这一种引用写法，不做工具市场、OAuth 与工具级权限矩阵；审计保存完整请求体属验收期设计，未做采样与 TTL。
 
 配置参考：[Compose 启动顺序](https://docs.docker.com/compose/how-tos/startup-order/)、[Nginx 代理指令](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)。
 

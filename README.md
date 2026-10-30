@@ -1,14 +1,45 @@
-# CampusClaw 迭代1
+# CampusClaw
 
-价值：让班级成员在权限边界内获得可复用的教学资料。
-场景：教师登录并上传资料，同班学生登录后读取，其他班级不可读取。
-本迭代不做：智能问答、聊天、作业批改、注册找回、校园SSO和生产高可用。
+价值：让班级成员在权限边界内获得可复用的教学资料，并让"AI 怎么回答"变成可查的事实。
+场景：教师登录并上传资料、配置 AI 应用与外部工具，同班学生登录后检索、提问并看到出处，其他班级不可读取。
 
-当前阶段：第3课
-项目介绍及智能体交接见 [CampusClaw 项目报告](docs/CampusClaw-智能体交接报告.md)。
-变更目录：openspec/changes/add-auth-rbac-class-knowledge/
-当前已实现 Go API 与 React 班级资料室。开发启动见 [后端说明](backend/README.md) 与 [前端说明](frontend/README.md)；账号及样本初始化见 [验收数据](backend/FIXTURES.md)。
+## 现在能做什么
 
-Compose、镜像构建与 Nginx 配置已提供，部署、停止和备份恢复见 [容器部署说明](deploy/README.md)。Compose 配置、镜像构建、代理上传下载、真实 MySQL 停机/恢复、保留卷重建与备份恢复验证均已通过；第 8 组三账号权限、会话重建/过期、初始化幂等和场景覆盖验收也已完成。已执行证据及限制见 [第 7 组验收记录](deploy/VERIFY-T7.md)。
+| 能力 | 一句话 | 入口 |
+|---|---|---|
+| 班级资料与检索 | 上传 TXT/MD，按关键字、向量或混合模式检索，命中可回溯到字符区间 | 「班级资料」「知识检索」 |
+| 依据回答 | 先检索再作答，结论标 `[n]`；没有命中就说没有，不编造 | 「知识问答」 |
+| 智能体与流式回答 | 每个应用有自己的提示词、技能与材料范围，回答逐段到达 | 「智能体对话」 |
+| 技能与工具 | 技能是文本文件（可上传），服务端按词法计分路由；声明的外部工具进入工具循环 | 「技能」「MCP 工具」 |
+| 多应用与模板 | 一个应用 = 模板/自由文本 + 候选技能 + 材料范围 + 可调用工具，都能不改代码调整 | 「AI 应用」「提示词模板」 |
+| 调用审计 | 每次模型调用一行，保存**真正发出的请求体**，五个验证问题都用它回答 | 「调用审计」 |
 
-最终验收见 [第 8 组记录](deploy/VERIFY-T8.md) 与 [42 个场景证据](deploy/SCENARIO-EVIDENCE.md)。当前 change 的 25 项任务全部完成；测试容器已停止，实际使用请按部署说明配置并启动。
+外部工具走 function calling：**决策归模型，执行与收尾归宿主**。仓库内自带一个最小 MCP 服务端
+（`mcp-server/`），令牌只从环境变量读取，宿主侧以密文保存并逐工具授权。
+协议形状与调用循环见 [backend/MCP.md](backend/MCP.md)；审计字段与五个问题的取数方式见
+[backend/AUDIT.md](backend/AUDIT.md)。
+
+## 怎么跑起来
+
+开发启动见 [后端说明](backend/README.md) 与 [前端说明](frontend/README.md)；账号与样本初始化见
+[验收数据](backend/FIXTURES.md)。
+
+容器部署、串行初始化的顺序与备份恢复见 [容器部署说明](deploy/README.md)。初始化顺序：
+`migrate → seed → seed-materials → seed-skills → seed-apps`，其中 `seed-apps` 写入三个内置应用
+（数学助教、语文助教、通用答疑）与它们的模板。
+
+## 规约与验收
+
+本项目按 OpenSpec 的"先规约、后实现"推进，每个变更在 `openspec/changes/` 下有
+`proposal.md` / `specs/` / `design.md` / `tasks.md` 四件套，完成后归档到 `openspec/changes/archive/`。
+
+- 第 3 课（认证与班级隔离）、第 4 课（可追溯检索）、第 5 课（智能体、技能、流式回答）已归档。
+- 个人项目验收变更：`openspec/changes/add-app-platform-mcp-and-llm-audit/`
+  （5 个能力 / 18 条需求 / 73 个场景 / 43 项任务）。
+- 历史验收证据见 [第 7 组记录](deploy/VERIFY-T7.md)、[第 8 组记录](deploy/VERIFY-T8.md) 与
+  [42 个场景证据](deploy/SCENARIO-EVIDENCE.md)。
+
+## 本迭代不做
+
+生产高可用、校园 SSO、注册找回、作业批改、工具市场与 OAuth、工具级权限矩阵、
+审计数据的采样与 TTL。

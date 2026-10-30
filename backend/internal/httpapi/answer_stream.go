@@ -13,7 +13,7 @@ import (
 )
 
 // answerHandler 提供一次流式回答：POST /api/conversations/{id}/messages。
-// 事件顺序固定为 meta（先带引用列表）→ delta × n → done。
+// 事件顺序固定为 meta（先带引用与本次的工具调用）→ delta × n → done。
 type answerHandler struct {
 	service *chat.Service
 }
@@ -58,27 +58,48 @@ func (h answerHandler) stream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	// meta 延迟到"确定要发正文"之前才发出：工具调用是在流里才发现的，
+	// 若一开始就发 meta，就没有机会把 tool_calls 一起带上。
+	// 这样仍然满足"tool_calls 先于首个 delta"，且无调用时该字段整体省略。
+	var (
+		metaSent  bool
+		toolCalls []chat.ToolRecord
+	)
 	var selected any
 	if prepared.HasSkill {
 		selected = map[string]string{"name": prepared.Skill.Name}
 	}
-	meta := map[string]any{
-		"status":          "ok",
-		"conversation_id": prepared.Conversation.ID,
-		"user_message_id": prepared.UserMessageID,
-		"skill":           selected,
-		"citations":       prepared.Citations,
+	emitMeta := func() error {
+		if metaSent {
+			return nil
+		}
+		metaSent = true
+		meta := map[string]any{
+			"status":          "ok",
+			"conversation_id": prepared.Conversation.ID,
+			"user_message_id": prepared.UserMessageID,
+			"skill":           selected,
+			"citations":       prepared.Citations,
+		}
+		if len(toolCalls) > 0 {
+			meta["tool_calls"] = toolCalls
+		}
+		return sendEvent(w, flusher, "meta", meta)
 	}
-	if err := sendEvent(w, flusher, "meta", meta); err != nil {
-		return
-	}
-	messageID, _, partial, streamErr := h.service.Stream(ctx, prepared, func(text string) error {
-		return sendEvent(w, flusher, "delta", map[string]string{"text": text})
+	result, streamErr := h.service.Stream(ctx, prepared, chat.Hooks{
+		Delta: func(text string) error {
+			if err := emitMeta(); err != nil {
+				return err
+			}
+			return sendEvent(w, flusher, "delta", map[string]string{"text": text})
+		},
+		Tool: func(record chat.ToolRecord) { toolCalls = append(toolCalls, record) },
 	})
 	switch {
-	case streamErr == nil, partial && messageID > 0:
+	case streamErr == nil, result.Partial && result.MessageID > 0:
 		// 已产出内容并成功落库（哪怕生成中途失败）都以 done 收尾：这一轮对使用者是有效的。
-		_ = sendEvent(w, flusher, "done", map[string]any{"assistant_message_id": messageID})
+		_ = emitMeta()
+		_ = sendEvent(w, flusher, "done", map[string]any{"assistant_message_id": result.MessageID})
 	default:
 		// 一段都没产出、或落库失败：只能以 error 事件收尾。
 		_ = sendEvent(w, flusher, "error", map[string]string{"error": "internal_error", "message": "生成失败，请稍后重试。"})

@@ -12,3 +12,9 @@ var Files embed.FS
 //
 //go:embed skills
 var Skills embed.FS
+
+// Apps 是内置 AI 应用引用的提示词模板主体（第 6 课）。
+// 模板体含 {{app_name}}/{{today}}/{{question}} 三个占位符，由服务端渲染一次。
+//
+//go:embed apps
+var Apps embed.FS

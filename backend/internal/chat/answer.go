@@ -9,6 +9,9 @@ import (
 	"unicode/utf8"
 
 	"campusclaw/backend/internal/agent"
+	"campusclaw/backend/internal/audit"
+	"campusclaw/backend/internal/mcp"
+	promptlib "campusclaw/backend/internal/prompt"
 	"campusclaw/backend/internal/rag"
 	"campusclaw/backend/internal/skill"
 )
@@ -20,21 +23,49 @@ var (
 	ErrNoAgentAvailable = errors.New("no enabled agent in this class")
 )
 
-// Service 编排一次回答：会话与智能体 → 技能路由 → 绑定材料内检索 → 消息组装 → 流式生成 → 落库。
+// Options 是编排层的可选配置。缺省即第 5 课行为：不接外部工具、不写审计。
+type Options struct {
+	Settings mcp.Settings
+}
+
+// Service 编排一次回答：会话与智能体 → 技能路由 → 绑定材料内检索 → 消息组装 → 工具循环 → 落库。
 type Service struct {
 	chats     *Store
 	agents    *agent.Store
 	skills    *skill.Store
+	templates *promptlib.Store
+	servers   *mcp.Store
+	audit     *audit.Store
 	retrieval *rag.Service
+	settings  mcp.Settings
 }
 
-func New(db *sql.DB, retrieval *rag.Service) *Service {
-	return &Service{chats: NewStore(db), agents: agent.New(db), skills: skill.New(db), retrieval: retrieval}
+func New(db *sql.DB, retrieval *rag.Service, options ...Options) *Service {
+	settings := mcp.Settings{
+		CallTimeout: mcp.DefaultCallTimeout, MaxRounds: mcp.DefaultMaxRounds, MaxCalls: mcp.DefaultMaxCalls,
+	}
+	if len(options) > 0 && options[0].Settings.CallTimeout > 0 {
+		settings = options[0].Settings
+	}
+	service := &Service{
+		chats: NewStore(db), agents: agent.New(db), skills: skill.New(db),
+		templates: promptlib.NewStore(db), audit: audit.New(db),
+		retrieval: retrieval, settings: settings,
+	}
+	// 令牌密钥不可用时只关闭 MCP，不阻断启动：登记过的服务器会一直显示"令牌无法解密"。
+	if servers, err := mcp.NewStore(db, settings); err == nil {
+		service.servers = servers
+	}
+	return service
 }
 
-func (s *Service) Conversations() *Store { return s.chats }
-func (s *Service) Agents() *agent.Store  { return s.agents }
-func (s *Service) Skills() *skill.Store  { return s.skills }
+func (s *Service) Conversations() *Store       { return s.chats }
+func (s *Service) Agents() *agent.Store        { return s.agents }
+func (s *Service) Skills() *skill.Store        { return s.skills }
+func (s *Service) Templates() *promptlib.Store { return s.templates }
+func (s *Service) Servers() *mcp.Store         { return s.servers }
+func (s *Service) Audit() *audit.Store         { return s.audit }
+func (s *Service) Settings() mcp.Settings      { return s.settings }
 
 // Prepared 是一次回答在推送第一帧之前就已经确定的全部内容。
 type Prepared struct {
@@ -46,9 +77,13 @@ type Prepared struct {
 	Citations     []Citation
 	Messages      []rag.ChatMessage
 	UserMessageID uint64
+	ClassID       uint64
+	UserID        uint64
+	// Declarations 是本轮候选工具（来自命中技能声明的引用），为空表示不带 tools。
+	Declarations []mcp.Declaration
 }
 
-// CountSkills 返回候选技能条数，便于测试与排障时观察候选集大小。
+// CandidateSkills 返回候选技能，便于测试与排障时观察候选集大小。
 func (s *Service) CandidateSkills(ctx context.Context, classID, agentID uint64) ([]skill.Row, error) {
 	bound, err := s.agents.BoundSkills(ctx, classID, agentID)
 	if err != nil {
@@ -57,7 +92,8 @@ func (s *Service) CandidateSkills(ctx context.Context, classID, agentID uint64) 
 	return s.skills.ListByIDs(ctx, classID, bound)
 }
 
-// Prepare 完成所有可提前判定的工作：提问校验、会话归属、智能体、技能路由、检索与消息组装。
+// Prepare 完成所有可提前判定的工作：提问校验、会话归属、智能体、提示词、技能路由、
+// 检索、候选工具与消息组装。
 // 出错语义：ErrNotFound → 404；ErrInvalidQuestion / ErrNoAgentAvailable → 400；
 // rag.ErrDependency → 503。这些失败都发生在写第一帧之前，因此仍能返回状态码。
 func (s *Service) Prepare(ctx context.Context, classID, userID, conversationID uint64, question string) (Prepared, error) {
@@ -112,14 +148,20 @@ func (s *Service) Prepare(ctx context.Context, classID, userID, conversationID u
 			return Prepared{}, err
 		}
 	}
+	// 系统提示词的来源优先级：引用模板 → 自由文本 → 默认角色。
+	basePrompt := s.resolvePrompt(ctx, classID, selected, question)
 	messages, citations := BuildMessages(BuildInput{
-		AgentPrompt: selected.Prompt,
+		AgentPrompt: basePrompt,
 		Skill:       picked,
 		HasSkill:    hasSkill,
 		Hits:        hits,
 		Question:    question,
 		History:     history,
 	})
+	declarations, err := s.declarationsOf(ctx, classID, picked, hasSkill)
+	if err != nil {
+		return Prepared{}, err
+	}
 	return Prepared{
 		Conversation:  conversation,
 		Agent:         selected,
@@ -129,49 +171,76 @@ func (s *Service) Prepare(ctx context.Context, classID, userID, conversationID u
 		Citations:     citations,
 		Messages:      messages,
 		UserMessageID: userMessageID,
+		ClassID:       classID,
+		UserID:        userID,
+		Declarations:  declarations,
 	}, nil
 }
 
-// Stream 执行生成：每段增量先经编号过滤器再交给 emit，最后把助手消息（连同引用与技能名）落库。
-// partial 表示是否已有内容产出——调用方据此决定用 done 还是 error 收尾。
-func (s *Service) Stream(ctx context.Context, prepared Prepared, emit func(string) error) (uint64, string, bool, error) {
-	filter := FilterFor(len(prepared.Citations) > 0)
-	var answer strings.Builder
-	if s.retrieval == nil {
-		return 0, "", false, rag.ErrDependency
+// resolvePrompt 渲染模板或退回自由文本。模板被删或读不到时退回自由文本而不是报错：
+// 一个应用不该因为模板行不见了就无法回答。
+func (s *Service) resolvePrompt(ctx context.Context, classID uint64, selected agent.Row, question string) string {
+	if selected.PromptTemplateID == nil || s.templates == nil {
+		return selected.Prompt
 	}
-	_, err := s.retrieval.AnswerStream(ctx, prepared.Messages, rag.StreamOptions{}, func(delta string) error {
-		text := filter.Push(delta)
-		if text == "" {
-			return nil
+	template, err := s.templates.Get(ctx, classID, *selected.PromptTemplateID)
+	if err != nil {
+		return selected.Prompt
+	}
+	// 渲染一次、不递归：提问里出现 {{today}} 会原样留在输出中。
+	return promptlib.Render(template.Body, selected.Name, question)
+}
+
+// declarationsOf 把命中技能声明的工具引用解析成"当前可用"的声明。
+// 运行期只判可用性，不重做配置期的四类校验。
+func (s *Service) declarationsOf(ctx context.Context, classID uint64, picked skill.Row, hasSkill bool) ([]mcp.Declaration, error) {
+	if !hasSkill || s.servers == nil {
+		return nil, nil
+	}
+	refs := make([]mcp.Ref, 0, len(picked.Tools))
+	for _, tool := range picked.Tools {
+		if skill.IsBuiltinTool(tool) {
+			continue
 		}
-		answer.WriteString(text)
-		return emit(text)
-	})
-	if tail := filter.Flush(); tail != "" {
-		answer.WriteString(tail)
-		if emitErr := emit(tail); emitErr != nil && err == nil {
-			err = emitErr
+		ref, err := mcp.ParseRef(tool)
+		if err != nil {
+			continue
 		}
+		refs = append(refs, ref)
 	}
-	partial := answer.Len() > 0
-	if err != nil && !partial {
-		// 一段都没产出：把失败如实上报给调用方（流已开始则由它以 error 事件收尾）。
-		return 0, "", false, err
+	if len(refs) == 0 {
+		return nil, nil
 	}
-	var citations json.RawMessage
-	skillName := ""
-	if len(prepared.Citations) > 0 {
-		if encoded, marshalErr := json.Marshal(prepared.Citations); marshalErr == nil {
-			citations = encoded
-		}
+	return s.servers.Available(ctx, classID, refs)
+}
+
+// toolDeclarations 把声明转成网关层的工具声明，parameters 原样取自发现结果。
+func toolDeclarations(declarations []mcp.Declaration) []rag.ToolDecl {
+	tools := make([]rag.ToolDecl, 0, len(declarations))
+	for _, declaration := range declarations {
+		tools = append(tools, rag.ToolDecl{
+			Name: declaration.Name, Description: declaration.Description, Parameters: declaration.Parameters,
+		})
 	}
-	if prepared.HasSkill {
-		skillName = prepared.Skill.Name
+	return tools
+}
+
+// toolCallPayload 是 meta.tool_calls 里的一项，也是前端工具栏的全部依据。
+type toolCallPayload struct {
+	Ref       string `json:"ref"`
+	Status    string `json:"status"`
+	LatencyMS int    `json:"latency_ms"`
+	Text      string `json:"text"`
+}
+
+// encodeCitations 把引用列表编码成落库用的 JSON；空列表返回 nil。
+func encodeCitations(citations []Citation) json.RawMessage {
+	if len(citations) == 0 {
+		return nil
 	}
-	id, persistErr := s.chats.FinishTurn(ctx, prepared.Conversation.ID, answer.String(), citations, skillName)
-	if persistErr != nil {
-		return 0, answer.String(), partial, persistErr
+	encoded, err := json.Marshal(citations)
+	if err != nil {
+		return nil
 	}
-	return id, answer.String(), partial, nil
+	return encoded
 }

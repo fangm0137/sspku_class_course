@@ -41,6 +41,22 @@ func (g *Gateway) VectorEnabled() bool {
 		g.config.EmbeddingAPIKey != "" && g.config.EmbeddingDimension > 0
 }
 
+// ChatModel 返回当前配置的对话模型名，供审计记录"这次调的是哪个模型"。
+func (g *Gateway) ChatModel() string {
+	if g == nil {
+		return ""
+	}
+	return g.config.ChatModel
+}
+
+// ChatModel 是 Gateway 的透传，让编排层不必直接持有网关内部结构。
+func (s *Service) ChatModel() string {
+	if s == nil {
+		return ""
+	}
+	return s.gateway.ChatModel()
+}
+
 // ChatEnabled 表示对话配置齐全，可以生成回答。
 func (g *Gateway) ChatEnabled() bool {
 	if g == nil {

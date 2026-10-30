@@ -31,6 +31,8 @@ const messages: Record<string, string> = {
   invalid_request: '请求无效，请检查输入或文件格式。',
   payload_too_large: '文件超过大小限制，请选择不超过 5 MiB 的文件。',
   not_found: '这份材料不存在或不属于你的班级。',
+  conflict: '该资源仍被引用，先解除引用再删除。',
+  upstream_error: '外部工具连接失败，请检查地址与令牌。',
   internal_error: '操作未完成，请稍后重试。',
 };
 export class ApiError extends Error {
@@ -136,14 +138,15 @@ export async function download(item: Material) {
 // 智能体：提示词留空时由服务端回退到默认角色设定，前端不做任何补齐。
 export type Agent = {
   id: number; name: string; prompt: string; enabled: boolean;
+  prompt_template_id: number | null; builtin: boolean;
   skill_ids: number[]; material_ids: number[];
 };
-export type AgentInput = { name: string; prompt: string; enabled: boolean };
+export type AgentInput = { name: string; prompt: string; enabled: boolean; prompt_template_id?: number | null };
 
 // 技能：记录的每一列都由服务端从文件原文解析得到，前端只提交原文。
 export type Skill = {
   id: number; name: string; trigger_text: string; description: string;
-  subject_text: string; tools: string[]; enabled: boolean;
+  subject_text: string; tools: string[]; enabled: boolean; builtin: boolean;
 };
 export type SkillDetail = { skill: Skill; source_text: string };
 
@@ -159,9 +162,10 @@ export type ChatMessage = {
 };
 export type ConversationDetail = Conversation & { messages: ChatMessage[] };
 
-// 服务端的四个事件名与后端实现保持一致。
+// 服务端的四个事件名与后端实现保持一致；meta 里的 tool_calls 只在确有调用时出现。
+export type ToolCallRecord = { ref: string; status: 'ok' | 'denied' | 'error'; latency_ms: number; text: string };
 export type StreamEvent =
-  | { type: 'meta'; status: string; conversation_id: number; user_message_id: number; skill: { name: string } | null; citations: Citation[] }
+  | { type: 'meta'; status: string; conversation_id: number; user_message_id: number; skill: { name: string } | null; citations: Citation[]; tool_calls?: ToolCallRecord[] }
   | { type: 'delta'; text: string }
   | { type: 'done'; assistant_message_id: number }
   | { type: 'error'; error: string; message: string };
@@ -272,4 +276,94 @@ export async function sendMessage(
     const event = parseFrame(buffer);
     if (event) onEvent(event);
   }
+}
+
+/* ─────────────── 第 6 课：模板、组成视图、MCP 与调用审计 ─────────────── */
+
+// 模板：模板体只做三个占位符的一次替换，渲染在服务端完成。
+export type PromptTemplate = { id: number; name: string; body: string; description: string; enabled: boolean };
+export type PromptTemplateInput = { name: string; body: string; description: string; enabled: boolean };
+
+// 组成视图：这个应用当前实际生效的东西。
+export type NamedItem = { id: number; name: string };
+export type Composition = {
+  agent_id: number; name: string; builtin: boolean; prompt: string;
+  template_id: number | null; template_name: string;
+  skills: NamedItem[]; materials: NamedItem[]; tool_refs: string[];
+};
+
+// MCP 服务器：令牌只进不出，响应里只有 has_token。
+export type McpServer = {
+  id: number; name: string; base_url: string; has_token: boolean;
+  status: 'disconnected' | 'connected' | 'error'; last_error: string;
+  connected_at?: string; tool_count: number;
+};
+export type McpTool = { name: string; description: string; input_schema: unknown };
+
+// 调用审计：llm_calls 一行即一轮模型调用；工具调用单独一张表。
+export type LlmCall = {
+  id: number; conversation_id: number; user_id: number; agent_id: number; round_no: number; model: string;
+  system_prompt: string; user_prompt: string; message_count: number; context_chars: number; skill_name: string;
+  tool_def_count: number; tool_call_count: number; finish_reason: string; status: string; http_status: number;
+  prompt_tokens: number; completion_tokens: number; latency_ms: number; error_text: string; created_at: string;
+};
+export type ToolCallDetail = {
+  id: number; round_no: number; server_name: string; tool_name: string; arguments_json: string;
+  status: string; result_excerpt: string; error_text: string; latency_ms: number; created_at: string;
+};
+export type LlmCallDetail = LlmCall & {
+  request_json: string; response_text: string; response_json: string; tool_calls: ToolCallDetail[];
+};
+export type ContextSize = { material_count: number; source_chars: number; context_chars: number; material_titles: string[] };
+
+export async function listTemplates(includeDisabled: boolean): Promise<PromptTemplate[]> {
+  return (await read<{ items: PromptTemplate[] }>(`/api/prompt-templates${includeDisabled ? '?all=1' : ''}`)).items;
+}
+export async function createTemplate(input: PromptTemplateInput): Promise<number> {
+  return (await write<{ id: number }>('/api/prompt-templates', input)).id;
+}
+export async function updateTemplate(id: number, input: PromptTemplateInput): Promise<void> {
+  await put(`/api/prompt-templates/${id}`, input);
+}
+export async function deleteTemplate(id: number): Promise<void> {
+  await remove(`/api/prompt-templates/${id}`);
+}
+export async function getComposition(id: number): Promise<Composition> {
+  return read<Composition>(`/api/agents/${id}/composition`);
+}
+
+export async function listMcpServers(): Promise<McpServer[]> {
+  return (await read<{ items: McpServer[] }>('/api/mcp/servers')).items;
+}
+export async function createMcpServer(input: { name: string; base_url: string; token: string }): Promise<number> {
+  return (await write<{ id: number }>('/api/mcp/servers', input)).id;
+}
+export async function connectMcpServer(id: number): Promise<McpTool[]> {
+  return (await write<{ tools: McpTool[] }>(`/api/mcp/servers/${id}/connect`)).tools;
+}
+export async function disconnectMcpServer(id: number): Promise<void> {
+  await write<{ ok: boolean }>(`/api/mcp/servers/${id}/disconnect`);
+}
+export async function deleteMcpServer(id: number): Promise<void> {
+  await remove(`/api/mcp/servers/${id}`);
+}
+export async function listMcpTools(id: number): Promise<McpTool[]> {
+  return (await read<{ items: McpTool[] }>(`/api/mcp/servers/${id}/tools`)).items;
+}
+
+export async function listLlmCalls(limit = 50): Promise<LlmCall[]> {
+  return (await read<{ items: LlmCall[] }>(`/api/llm-calls?limit=${limit}`)).items;
+}
+export async function getLlmCall(id: number): Promise<LlmCallDetail> {
+  return read<LlmCallDetail>(`/api/llm-calls/${id}`);
+}
+export async function getContextSize(id: number): Promise<ContextSize> {
+  return read<ContextSize>(`/api/llm-calls/${id}/context-size`);
+}
+
+// 技能上传：与 JSON 创建同一条落库路径，只是原文来自文件。
+export async function uploadSkill(file: File): Promise<number> {
+  const data = new FormData();
+  data.append('file', file);
+  return (await write<{ id: number }>('/api/skills/upload', data)).id;
 }

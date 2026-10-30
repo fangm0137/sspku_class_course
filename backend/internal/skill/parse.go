@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"campusclaw/backend/internal/mcp"
 )
 
 // 长度上限：与数据库 CHECK 一致，两者任一被突破都算配置错误。
@@ -17,7 +19,12 @@ const (
 	MaxDescRunes        = 2000
 	MaxSubjectRunes     = 32
 	KnowledgeSearchTool = "knowledge_search"
+	// MaxTools 限制一个技能能声明的工具数：声明会占上下文，工具多时挤压资料。
+	MaxTools = 5
 )
+
+// IsBuiltinTool 判断是否为平台内置工具（不需要外部服务器）。
+func IsBuiltinTool(name string) bool { return name == KnowledgeSearchTool }
 
 // 元数据键名。教师写的是中文键行，冒号兼容全角与半角。
 const (
@@ -130,11 +137,19 @@ func applyField(definition *Definition, key, value string, line int) error {
 	case keyTools:
 		tools := SplitList(value)
 		if len(tools) == 0 {
-			return parseErrorf(line, "工具不能为空，本课只接受 %s", KnowledgeSearchTool)
+			return parseErrorf(line, "工具不能为空，接受 %s 或 工具名@服务器名", KnowledgeSearchTool)
+		}
+		if len(tools) > MaxTools {
+			return parseErrorf(line, "工具最多 %d 个，当前 %d 个", MaxTools, len(tools))
 		}
 		for _, tool := range tools {
-			if tool != KnowledgeSearchTool {
-				return parseErrorf(line, "工具「%s」不被支持，本课只接受 %s", tool, KnowledgeSearchTool)
+			if IsBuiltinTool(tool) {
+				continue
+			}
+			// 这里只校验写法。服务器是否属于本班、是否已连接、工具是否在清单内，
+			// 需要访问数据库，由保存接口在写入前逐条检查（四类条件的后三类）。
+			if _, err := mcp.ParseRef(tool); err != nil {
+				return parseErrorf(line, "工具「%s」既不是 %s，也不是 工具名@服务器名（只允许一个 @）", tool, KnowledgeSearchTool)
 			}
 		}
 		definition.Tools = tools

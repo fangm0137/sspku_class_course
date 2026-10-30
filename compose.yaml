@@ -55,6 +55,12 @@ services:
       CHAT_BASE_URL: ${CHAT_BASE_URL:-}
       CHAT_API_KEY: ${CHAT_API_KEY:-}
       CHAT_MODEL: ${CHAT_MODEL:-}
+      # 工具循环的三项配额；全部可选，缺省 10s / 3 轮 / 单轮 4 次。
+      MCP_CALL_TIMEOUT: ${MCP_CALL_TIMEOUT:-}
+      MCP_MAX_ROUNDS: ${MCP_MAX_ROUNDS:-}
+      MCP_MAX_CALLS: ${MCP_MAX_CALLS:-}
+      # 可选：MCP 令牌的加密子密钥。留空则由 TOKEN_SECRET 派生。
+      MCP_TOKEN_KEY: ${MCP_TOKEN_KEY:-}
     volumes:
       - material_data:/data
     depends_on:
@@ -64,6 +70,23 @@ services:
         condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # 外部工具的被调用方：同仓库的最小 MCP 服务端，供"接入外部工具"这一项能力实测。
+  # 它不依赖数据库，也不引用 api 的任何代码，可以单独起停。
+  mcp:
+    build:
+      context: .
+      dockerfile: deploy/mcp.Dockerfile
+    environment:
+      # 令牌只从环境读取；留空时 /mcp 一律 401（宁可不可用，也不允许"谁都能调"）。
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      MCP_ADDR: 0.0.0.0:8090
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
       interval: 10s
       timeout: 3s
       retries: 3

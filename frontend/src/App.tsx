@@ -2,11 +2,13 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   ApiError, ask, createAgent, createConversation, createSkill, deleteAgent, deleteSkill, download,
   forgetToken, getConversation, getSkill, listAgents, listConversations, listSkills, read,
-  reindex, search, sendMessage, setAgentMaterials, setAgentSkills, signIn, updateAgent, updateSkill,
+  reindex, search, sendMessage, setAgentMaterials, setAgentSkills, signIn, updateAgent, updateSkill, uploadSkill,
   write,
   type Agent, type AgentInput, type AskCitation, type Citation, type Conversation, type ConversationDetail,
-  type Detail, type Material, type ReindexOptions, type SearchHit, type SearchMode, type Skill, type User,
+  type Detail, type Material, type ReindexOptions, type SearchHit, type SearchMode, type Skill,
+  type ToolCallRecord, type User,
 } from './api';
+import { AppsView, AuditView, McpView, TemplatesView } from './Platform';
 
 function Mark() { return <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M6 8h8l2 3 2-3h8v17h-8l-2 2-2-2H6zM16 11v16" /></svg></span>; }
 function FileIcon() { return <span className="file-icon" aria-hidden="true"><svg viewBox="0 0 24 28"><path d="M4 2h10l6 6v18H4zM14 2v7h6M8 14h8M8 19h6" /></svg></span>; }
@@ -15,9 +17,9 @@ function dateLabel(value: string) { return new Intl.DateTimeFormat('zh-CN', { ye
 // 一轮问答：问题 + 依据回答 + 引用。引用字段直接来自 /api/ask，n 就是回答里的 [n]。
 type Turn = { question: string; answer: string; hits: AskCitation[] };
 
-type View = 'materials' | 'search' | 'qa' | 'chat' | 'agents' | 'skills';
+type View = 'materials' | 'search' | 'qa' | 'chat' | 'agents' | 'skills' | 'apps' | 'templates' | 'mcp' | 'audit';
 
-const emptyAgentDraft: AgentInput = { name: '', prompt: '', enabled: true };
+const emptyAgentDraft: AgentInput = { name: '', prompt: '', enabled: true, prompt_template_id: null };
 
 // 在数组里增删一个编号，用于绑定技能与材料时的多选。
 function toggled(list: number[], id: number): number[] {
@@ -54,6 +56,7 @@ export function App() {
   const [streaming, setStreaming] = useState('');
   const [streamSkill, setStreamSkill] = useState('');
   const [streamCitations, setStreamCitations] = useState<Citation[]>([]);
+  const [streamTools, setStreamTools] = useState<ToolCallRecord[]>([]);
   const [streamError, setStreamError] = useState('');
 
   // 第 5 课：教师侧管理智能体与技能。
@@ -63,6 +66,7 @@ export function App() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillSource, setSkillSource] = useState('');
   const [editingSkill, setEditingSkill] = useState(0);
+  const [skillFile, setSkillFile] = useState<File | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const running = useRef(false);
@@ -72,7 +76,7 @@ export function App() {
     setTurns([]); setQuestion(''); setView('materials'); forgetToken();
     setQuery(''); setResults(null); setMode('hybrid'); setStrategy('auto');
     setChatAgents([]); setConversations([]); setConversation(null); setSelectedAgent(0);
-    setChatQuestion(''); setStreaming(''); setStreamSkill(''); setStreamCitations([]); setStreamError('');
+    setChatQuestion(''); setStreaming(''); setStreamSkill(''); setStreamCitations([]); setStreamTools([]); setStreamError('');
     setAgents([]); setAgentDraft(emptyAgentDraft); setEditingAgent(0);
     setSkills([]); setSkillSource(''); setEditingSkill(0);
   }
@@ -214,13 +218,15 @@ export function App() {
     if (!current || !text) return;
     void act(async () => {
       setChatQuestion('');
-      setStreaming(''); setStreamSkill(''); setStreamCitations([]); setStreamError('');
+      setStreaming(''); setStreamSkill(''); setStreamCitations([]); setStreamTools([]); setStreamError('');
       let accumulated = '';
       await sendMessage(current.id, text, incoming => {
         switch (incoming.type) {
           case 'meta':
             setStreamCitations(incoming.citations ?? []);
             setStreamSkill(incoming.skill?.name ?? '');
+            // 没有调用时服务端整体省略这个字段，据此不渲染工具栏。
+            setStreamTools(incoming.tool_calls ?? []);
             break;
           case 'delta':
             accumulated += incoming.text;
@@ -257,7 +263,7 @@ export function App() {
   }
   function editAgent(agent: Agent) {
     setEditingAgent(agent.id);
-    setAgentDraft({ name: agent.name, prompt: agent.prompt, enabled: agent.enabled });
+    setAgentDraft({ name: agent.name, prompt: agent.prompt, enabled: agent.enabled, prompt_template_id: agent.prompt_template_id });
   }
   function saveAgent(event: FormEvent) {
     event.preventDefault();
@@ -273,7 +279,7 @@ export function App() {
       await loadAgentData();
       setEditingAgent(target);
       const saved = agents.find(item => item.id === target);
-      if (saved) setAgentDraft({ name: saved.name, prompt: saved.prompt, enabled: saved.enabled });
+      if (saved) setAgentDraft({ name: saved.name, prompt: saved.prompt, enabled: saved.enabled, prompt_template_id: saved.prompt_template_id });
     });
   }
   function removeAgent(id: number) {
@@ -315,6 +321,18 @@ export function App() {
       await deleteSkill(id);
       setNotice('技能已删除。');
       if (editingSkill === id) { setEditingSkill(0); setSkillSource(''); }
+      setSkills(await listSkills());
+    });
+  }
+  // 上传走与文本创建相同的服务端校验；成功后立即可被应用绑定。
+  function uploadSkillFile(event: FormEvent) {
+    event.preventDefault();
+    if (!skillFile) return;
+    void act(async () => {
+      const id = await uploadSkill(skillFile);
+      setSkillFile(null);
+      setEditingSkill(id);
+      setNotice('技能已上传并创建，可以在「智能体」里把它绑定到应用。');
       setSkills(await listSkills());
     });
   }
@@ -402,6 +420,16 @@ export function App() {
         <span className="ask-cite-head">[{index + 1}] {item.title} · 切片 {item.chunk_index} · 字符 {item.char_start}–{item.char_end}</span>
       </li>)}</ol>;
 
+  // 工具调用工具栏：只在确有调用时出现（服务端没有调用时会整体省略该字段）。
+  const toolBar = (records: ToolCallRecord[]) => <div className="tool-bar" data-testid="tool-bar">
+    <span className="tool-bar-title">本次用到 {records.length} 个工具</span>
+    {records.map((item, index) => <span key={`${item.ref}-${index}`} className={`tool-chip ${item.status}`}>
+      <strong>{item.ref}</strong>
+      <span>{item.status === 'ok' ? '成功' : item.status === 'denied' ? '被拒绝' : '失败'} · {item.latency_ms}ms</span>
+      {item.text && <em>{item.text.length > 80 ? `${item.text.slice(0, 80)}…` : item.text}</em>}
+    </span>)}
+  </div>;
+
   const chatView = <>
     <div className="page-heading"><div><span className="eyebrow">TUTOR CHAT</span><h1>智能体对话<span className="dot">.</span></h1><p className="muted">每个智能体有自己的角色提示词，只在自己绑定的技能与材料范围内作答。没有检索到资料时仍会按角色回答，此时正文不带编号。</p></div><button disabled={busy} onClick={openChat} className="secondary">{busy ? '处理中…' : '刷新会话'}</button></div>
     <section className="chat-panel">
@@ -428,6 +456,7 @@ export function App() {
           : <>
             <div className="chat-heading"><span className="eyebrow">当前会话</span><h2>{conversation.title}</h2><p className="muted">智能体 #{conversation.agent_id} · {conversation.messages.length} 条消息</p></div>
             <div className="chat-thread" data-testid="chat-thread">
+              {!streaming && streamTools.length > 0 && toolBar(streamTools)}
               {conversation.messages.map(message => <div className="ask-turn" key={message.id}>
                 <div className={`ask-bubble ${message.role === 'user' ? 'ask-user' : 'ask-answer'}`}>
                   <span className="ask-role">{message.role === 'user' ? '你' : '助教'}</span>
@@ -438,6 +467,7 @@ export function App() {
               </div>)}
               {streaming && <div className="ask-turn"><div className="ask-bubble ask-answer">
                 <span className="ask-role">助教{streamSkill ? ` · ${streamSkill}` : ''}</span>
+                {streamTools.length > 0 && toolBar(streamTools)}
                 <p className="ask-text" data-testid="stream-text">{streaming}<span className="caret" aria-hidden="true">▍</span></p>
                 {!streamSkill && streamCitations.length > 0 && citationList(streamCitations)}
               </div></div>}
@@ -511,15 +541,22 @@ export function App() {
         <div className="section-heading"><h2>{editingSkill ? `编辑技能 #${editingSkill}` : '新建技能'}</h2>{editingSkill > 0 && <button type="button" className="text-button" onClick={() => { setEditingSkill(0); setSkillSource(''); }}>改为新建</button>}</div>
         <form onSubmit={saveSkill}>
           <label htmlFor="skill-source">技能文件原文</label>
-          <textarea id="skill-source" rows={12} value={skillSource} disabled={busy} onChange={e => setSkillSource(e.target.value)} placeholder={'名称：数学解题引导\n适用条件：方程,去括号,分数\n资料：数学\n工具：knowledge_search\n启用：是\n\n学生正在自己做数学作业……'} />
+          <textarea id="skill-source" rows={12} value={skillSource} disabled={busy} onChange={e => setSkillSource(e.target.value)} placeholder={'名称：数学解题引导\n适用条件：方程,去括号,分数\n资料：数学\n工具：knowledge_search、formula_hint@campus-tools\n启用：是\n\n学生正在自己做数学作业……'} />
           <button className="primary" disabled={busy || !skillSource.trim()}>{editingSkill ? '保存修改' : '创建技能'}</button>
+        </form>
+        <form onSubmit={uploadSkillFile}>
+          <label htmlFor="skill-file">或上传技能文件（.txt / .md，不超过 64 KiB）</label>
+          <input id="skill-file" type="file" accept=".txt,.md" disabled={busy} onChange={e => setSkillFile(e.target.files?.[0] || null)} />
+          <button className="secondary" disabled={busy || !skillFile}>{busy ? '上传中…' : '上传并创建'}</button>
+          <p className="muted">上传与上面的文本创建走同一条解析与校验路径，失败同样带行号。</p>
         </form>
       </section>
       <section className="admin-list">
         <div className="section-heading"><h2>本班技能</h2><span>{skills.length} 个</span></div>
         <ul>{skills.map(item => <li key={item.id} className={`admin-row ${editingSkill === item.id ? 'selected' : ''}`}>
-          <div className="admin-row-head"><strong>{item.name}</strong><span className="hit-meta">{item.enabled ? '已启用' : '已停用'}</span></div>
+          <div className="admin-row-head"><strong>{item.name}</strong><span className="row-badges">{item.builtin && <span className="pill ok">内置</span>}<span className="hit-meta">{item.enabled ? '已启用' : '已停用'}</span></span></div>
           <p className="muted">适用条件：{item.trigger_text}{item.subject_text && ` · 资料范围：${item.subject_text}`}</p>
+          <p className="muted">工具：{item.tools.join('、')}</p>
           <div className="admin-actions">
             <button type="button" className="text-button" disabled={busy} onClick={() => editSkill(item.id)}>编辑</button>
             <button type="button" className="text-button" disabled={busy} onClick={() => removeSkill(item.id)}>删除</button>
@@ -529,10 +566,10 @@ export function App() {
     </div>
   </>;
 
-  const crumb = view === 'qa' ? '知识问答' : view === 'search' ? '知识检索' : view === 'chat' ? '智能体对话' : view === 'agents' ? '智能体' : view === 'skills' ? '技能' : '教学材料';
+  const crumb = view === 'qa' ? '知识问答' : view === 'search' ? '知识检索' : view === 'chat' ? '智能体对话' : view === 'agents' ? '智能体' : view === 'skills' ? '技能' : view === 'apps' ? 'AI 应用' : view === 'templates' ? '提示词模板' : view === 'mcp' ? 'MCP 工具' : view === 'audit' ? '调用审计' : '教学材料';
 
   return <div className="workspace">
-    <aside className="sidebar"><div className="brand"><Mark /><span>CampusClaw</span></div><p className="sidebar-caption">我的学习空间</p><nav className="nav-list" aria-label="功能导航">{navButton('materials', '班级资料', '▤')}{navButton('search', '知识检索', '⌕')}{navButton('qa', '知识问答', '✦')}{navButton('chat', '智能体对话', '✎')}{user.role === 'teacher' && navButton('agents', '智能体', '◈')}{user.role === 'teacher' && navButton('skills', '技能', '⚙')}</nav><div className="sidebar-bottom"><span className="status-dot" /> 仅班级成员可见<p>每一次分享，<br />都是下一次学习的起点。</p></div></aside>
+    <aside className="sidebar"><div className="brand"><Mark /><span>CampusClaw</span></div><p className="sidebar-caption">我的学习空间</p><nav className="nav-list" aria-label="功能导航">{navButton('materials', '班级资料', '▤')}{navButton('search', '知识检索', '⌕')}{navButton('qa', '知识问答', '✦')}{navButton('chat', '智能体对话', '✎')}{navButton('apps', 'AI 应用', '◈')}{user.role === 'teacher' && navButton('agents', '智能体', '⚑')}{user.role === 'teacher' && navButton('skills', '技能', '⚙')}{navButton('templates', '提示词模板', '⌗')}{user.role === 'teacher' && navButton('mcp', 'MCP 工具', '⇄')}{navButton('audit', '调用审计', '☰')}</nav><div className="sidebar-bottom"><span className="status-dot" /> 仅班级成员可见<p>每一次分享，<br />都是下一次学习的起点。</p></div></aside>
     <div className="main-shell"><header className="topbar"><span>班级资料室 <span className="crumb">/ {crumb}</span></span><div className="identity"><span className="avatar" aria-hidden="true">{user.role === 'teacher' ? '教' : '学'}</span><span data-testid="identity">{user.username}<small>{user.role === 'teacher' ? '教师' : '学生'} · 班级 #{user.class_id}</small></span><button className="text-button" onClick={logout} disabled={busy}>退出登录</button></div></header>
       <main className="content">{feedback}
         {view === 'qa' ? qaView
@@ -540,7 +577,11 @@ export function App() {
             : view === 'chat' ? chatView
               : view === 'agents' ? agentsView
                 : view === 'skills' ? skillsView
-                  : materialsView}
+                  : view === 'apps' ? <AppsView role={user.role} />
+                    : view === 'templates' ? <TemplatesView role={user.role} />
+                      : view === 'mcp' ? <McpView role={user.role} />
+                        : view === 'audit' ? <AuditView />
+                          : materialsView}
         <footer className="content-footer">CampusClaw <span>让知识在班级里流动</span></footer>
       </main>
     </div>
